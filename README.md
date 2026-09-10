@@ -231,6 +231,30 @@ zip 하나로 묶어 줍니다.
 
 `diagnose.bat` 은 같은 내용을 압축 없이 `진단결과.txt` 로만 뽑습니다.
 
+### "누가 냉장고를 열어줘야 요리를 시작한다"
+
+이건 실제로 일어나는 현상이고, 원인은 이렇습니다.
+
+`Container:GetNumSlots()` 는 컨테이너의 **위젯 정보**에서 칸 수를 가져옵니다.
+칸이 늘어나는 상자류 모드(정렬·잠금·수거 버튼이 붙은 것들)는 그 정보를
+**실제로 열릴 때** 채우는 경우가 있습니다. 그 전까지 `GetNumSlots()` 는 `0` 을 돌려주고,
+NPC 쪽의 흔한 코드가
+
+```lua
+for slot = 1, cont:GetNumSlots() do   -- 0 이면 한 바퀴도 안 돈다
+```
+
+이라서, **가득 찬 상자가 빈 상자로 읽힙니다.** 누가 한 번 열면 위젯 정보가 채워지고
+그때부터 정상적으로 보이는 것이죠.
+
+이 패치는 칸 수를 아예 믿지 않고 `container.slots` 표를 직접 훑습니다
+(그다음 순서로 칸 수 반복 → replica). NPC Friends의 스캐너가 빈 결과를 돌려줬는데
+직접 읽어보니 물건이 있으면, 그 결과로 갈아끼우고 로그에 이렇게 남깁니다.
+
+```
+[NPCF-HOF] 닫힌 상자 안을 다시 읽어 재료 12종을 찾았습니다
+```
+
 ### 이전 패치가 깔려 있다면
 
 게임 안 왈리 창에 **"만들 수 있는 요리" / "다양한 음식 만들기"** 버튼이 보인다면, 그건
@@ -253,6 +277,7 @@ npcfriends_hof_cooking/             ← 로직의 원본. 그 자체로 독립 �
   scripts/hofnpc_core.lua             설정 · 요리 점수 · 요리 필터
   scripts/hofnpc_variety.lua          최근에 만든 요리 기억 + 감점
   scripts/hofnpc_search.lua           핵심: 조합 탐색
+  scripts/hofnpc_slots.lua            칸 수를 믿지 않고 상자 안 읽기
   scripts/hofnpc_diag.lua             요리를 못 할 때 이유 설명
   scripts/hofnpc_patch.lua            독립 모드용 런타임 후킹
   modmain.lua  modinfo.lua            독립 모드 껍데기

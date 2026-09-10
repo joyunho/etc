@@ -52,6 +52,44 @@ local function NewPlanner()
 			plan_calls = plan_calls + 1
 			return nil
 		end,
+		-- Stands in for the scanner that walks 1..GetNumSlots(): a closed
+		-- modded chest reports zero slots, so this comes back empty.
+		ScanIngredients = function(containers)
+			local pool = {}
+			for _, c in ipairs(containers or {}) do
+				local cont = c.components and c.components.container
+				for i = 1, (cont and cont:GetNumSlots() or 0) do
+					local item = cont.slots[i]
+					if item then
+						pool[item.prefab] = pool[item.prefab] or { total = 0, locations = {} }
+						pool[item.prefab].total = pool[item.prefab].total + 1
+						table.insert(pool[item.prefab].locations, { container = c, slot = i, count = 1 })
+					end
+				end
+			end
+			return pool
+		end,
+		CountExistingDishes = function(containers) return {} end,
+	}
+end
+
+-- A chest that is genuinely full but answers "0 slots" until someone opens it.
+local function NewClosedChest(prefabs, reported_slots)
+	local slots = {}
+	for i, prefab in ipairs(prefabs) do
+		slots[i] = { prefab = prefab, IsValid = function() return true end,
+		             HasTag = function() return false end }
+	end
+	return {
+		prefab  = "treasurechest",
+		IsValid = function() return true end,
+		components = {
+			container = {
+				slots         = slots,
+				GetNumSlots   = function() return reported_slots end,
+				GetItemInSlot = function(self, i) return i <= reported_slots and slots[i] or nil end,
+			},
+		},
 	}
 end
 
@@ -185,7 +223,44 @@ for i = 1, 10 do
 end
 check("never cooks a dish already stocked past the cap", not violated)
 
-print("\n=========== 6. it explains why the chef gave up ===========")
+print("\n=========== 6. a closed chest is not an empty chest ===========")
+-- Container:GetNumSlots() comes from the widget parameters, and several
+-- container mods only fill those in when the chest is opened. Until then the
+-- usual `for slot = 1, GetNumSlots()` loop runs zero times and a full chest
+-- reads as empty -- which is why the chef would only cook once a player opened
+-- the fridge.
+-- cheese + cheese + honey + berries makes kyno_cheesecake, which nothing
+-- filters out, so a failure here is the scan and not the menu.
+local CONTENTS     = { "kyno_cheese", "kyno_cheese", "honey", "berries" }
+local full_chest   = NewClosedChest(CONTENTS, 9)
+local closed_chest = NewClosedChest(CONTENTS, 0)
+
+local pool_open = Planner.ScanIngredients({ full_chest })
+local kinds_open = 0
+for _ in pairs(pool_open) do kinds_open = kinds_open + 1 end
+check("an open chest scans normally", kinds_open == 3, tostring(kinds_open))
+
+local pool_closed = Planner.ScanIngredients({ closed_chest })
+local kinds_closed = 0
+for _ in pairs(pool_closed) do kinds_closed = kinds_closed + 1 end
+check("a closed chest is recovered instead of read as empty", kinds_closed == 3, tostring(kinds_closed))
+
+-- And the recovered pool has to be usable, not just non-empty.
+local usable = true
+for prefab, data in pairs(pool_closed) do
+	if data.total < 1 or #data.locations < 1 or data.locations[1].container == nil
+		or data.locations[1].slot == nil then
+		usable = false
+	end
+end
+check("the recovered pool has real container slots", usable)
+
+local from_closed = Planner.FindBestRecipe(pool_closed, {}, true, Stub.COOKER)
+check("a dish can be planned from a closed chest",
+	from_closed ~= nil and from_closed ~= ORIGINAL_SENTINEL,
+	from_closed == ORIGINAL_SENTINEL and "fell back" or tostring(from_closed and from_closed.name))
+
+print("\n=========== 7. it explains why the chef gave up ===========")
 
 local chef = NewChef()
 

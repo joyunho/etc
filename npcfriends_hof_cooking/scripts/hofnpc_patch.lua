@@ -18,6 +18,7 @@ local Core    = require("hofnpc_core")
 local Search  = require("hofnpc_search")
 local Variety = require("hofnpc_variety")
 local Diag    = require("hofnpc_diag")
+local Slots   = require("hofnpc_slots")
 
 local Patch = {}
 
@@ -81,6 +82,7 @@ function Patch.TryApply()
 		Core.host.tuning.DEBUG_COOKING = true
 	end
 
+	pcall(Slots.Attach, planner)
 	pcall(Diag.Attach, planner)
 
 	Patch._orig = planner.FindBestRecipe

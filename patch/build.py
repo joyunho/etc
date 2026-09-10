@@ -36,6 +36,7 @@ PACKAGE_NAME = "NPC_HOF_Patch"
 # Order matters: later modules use the locals declared by earlier ones.
 MERGE_ORDER = [
     (SCRIPTS / "hofnpc_core.lua", "Core"),
+    (SCRIPTS / "hofnpc_slots.lua", "Slots"),
     (SCRIPTS / "hofnpc_variety.lua", "Variety"),
     (SCRIPTS / "hofnpc_search.lua", "Search"),
     (SCRIPTS / "hofnpc_diag.lua", "Diag"),

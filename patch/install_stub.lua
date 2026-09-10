@@ -48,6 +48,9 @@ function Install.Install(CookingPlanner)
 		Core.host.tuning.DEBUG_COOKING = true
 	end
 
+	-- 닫힌 상자를 빈 상자로 잘못 읽는 문제를 보정
+	pcall(Slots.Attach, CookingPlanner)
+
 	-- 요리를 못 할 때 이유를 설명해 주는 진단기
 	pcall(Diag.Attach, CookingPlanner)
 

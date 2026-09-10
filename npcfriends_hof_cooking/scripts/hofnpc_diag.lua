@@ -12,7 +12,8 @@
 
 local cooking = require("cooking")
 
-local Core = require("hofnpc_core")
+local Core  = require("hofnpc_core")
+local Slots = require("hofnpc_slots")
 
 local Diag = {}
 
@@ -86,11 +87,11 @@ local function DescribeContainers(containers)
 
 	for _, container in ipairs(containers or {}) do
 		if container ~= nil and container:IsValid() and container.components.container ~= nil then
-			local slots = container.components.container
 			local usable = 0
 
-			for i = 1, slots:GetNumSlots() do
-				local item = slots:GetItemInSlot(i)
+			-- Slots.Read, not a GetNumSlots loop: a closed modded chest reports
+			-- zero slots and would otherwise be counted as empty.
+			for _, item in pairs(Slots.Read(container)) do
 				if item ~= nil and item:IsValid() then
 					total_items = total_items + 1
 					if cooking.IsCookingIngredient(item.prefab) then
