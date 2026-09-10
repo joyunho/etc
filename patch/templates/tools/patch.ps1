@@ -14,8 +14,12 @@
 #   Windows PowerShell 5.1 (윈도우 기본 내장) 에서 동작하도록 작성했습니다.
 
 param(
-	[ValidateSet('install', 'restore', 'diagnose')]
-	[string]$Action = 'install'
+	[ValidateSet('install', 'restore', 'diagnose', 'collect')]
+	[string]$Action = 'install',
+
+	# 자동 탐색이 실패할 때 폴더를 직접 지정할 수 있습니다.
+	#   collect.bat "D:\Steam\steamapps\workshop\content\322330\3684000581"
+	[string]$ModFolder = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -108,6 +112,15 @@ function Test-ModFolder($path) {
 
 function Get-ModFolders {
 	$found = New-Object System.Collections.Generic.List[string]
+
+	if (-not [string]::IsNullOrWhiteSpace($ModFolder)) {
+		if (Test-ModFolder $ModFolder) {
+			$found.Add($ModFolder.TrimEnd('\'))
+			return $found
+		}
+		Write-Fail ('직접 지정하신 폴더에 scripts\npc\' + $PLANNER + ' 이 없습니다: ' + $ModFolder)
+		return $found
+	}
 
 	$relative = @(
 		('steamapps\workshop\content\322330\' + $MODID),
@@ -307,9 +320,9 @@ $STOCK = @{
 	'scripts\npc\npc_item_config.lua'               = @{ Size = 24328;  Hash = 'E3A166C72462D3A6' }
 }
 
-$report = New-Object System.Collections.Generic.List[string]
+$script:reportLines = New-Object System.Collections.Generic.List[string]
 
-function Add-Line($text) { $report.Add([string]$text); Write-Host $text }
+function Add-Line($text) { $script:reportLines.Add([string]$text); Write-Host $text }
 
 function Get-ShortHash($bytes) {
 	$sha = [System.Security.Cryptography.SHA256]::Create()
@@ -326,7 +339,45 @@ function Get-HashWithoutOurBlock($path) {
 	return (Get-ShortHash ([System.Text.Encoding]::UTF8.GetBytes($clean))), $clean.Length
 }
 
-function Invoke-Diagnose {
+# DST 가 로그와 세이브를 두는 곳. OneDrive 로 옮겨진 문서 폴더까지 봅니다.
+function Get-KleiRoots {
+	$roots = New-Object System.Collections.Generic.List[string]
+
+	$candidates = @()
+	try { $candidates += [Environment]::GetFolderPath('MyDocuments') } catch { }
+	if ($env:USERPROFILE) {
+		$candidates += (Join-Path $env:USERPROFILE 'Documents')
+		$candidates += (Join-Path $env:USERPROFILE 'OneDrive\Documents')
+		$candidates += (Join-Path $env:USERPROFILE '문서')
+	}
+
+	foreach ($c in $candidates) {
+		try {
+			if ([string]::IsNullOrWhiteSpace($c)) { continue }
+			$root = Join-Path $c 'Klei\DoNotStarveTogether'
+			if ((Test-Path -LiteralPath $root) -and -not $roots.Contains($root)) { $roots.Add($root) }
+		} catch { }
+	}
+
+	return $roots
+}
+
+function Get-DstLogs {
+	$logs = New-Object System.Collections.Generic.List[string]
+
+	foreach ($root in (Get-KleiRoots)) {
+		try {
+			foreach ($f in (Get-ChildItem -LiteralPath $root -Recurse -Include 'client_log.txt', 'server_log.txt' -ErrorAction SilentlyContinue)) {
+				if (-not $logs.Contains($f.FullName)) { $logs.Add($f.FullName) }
+			}
+		} catch { }
+	}
+
+	return $logs
+}
+
+function Build-Report {
+	$script:reportLines = New-Object System.Collections.Generic.List[string]
 	Add-Line ''
 	Add-Line '=========================================================='
 	Add-Line '  NPC Friends 요리 상태 진단'
@@ -382,14 +433,16 @@ function Invoke-Diagnose {
 			$bytes = [IO.File]::ReadAllBytes($full)
 			$hash  = Get-ShortHash $bytes
 			$size  = $bytes.Length
-			$stock = $STOCK[$rel]
+			# 주의: PowerShell 은 변수 이름의 대소문자를 구분하지 않습니다.
+			# 여기서 $stock 을 쓰면 $STOCK 해시 테이블 자체를 덮어써 버립니다.
+			$expected = $STOCK[$rel]
 			$verdict = '다른 패치가 고침'
 
-			if ($hash -eq $stock.Hash) {
+			if ($hash -eq $expected.Hash) {
 				$verdict = '원본 그대로'
 			} elseif ($rel -like '*npc_cooking_planner.lua') {
 				$clean, $cleanLen = Get-HashWithoutOurBlock $full
-				if ($clean -eq $stock.Hash) { $verdict = '원본 + 우리 한 줄' }
+				if ($clean -eq $expected.Hash) { $verdict = '원본 + 우리 한 줄' }
 			}
 
 			Add-Line ('      ' + $name.PadRight(38) + $size.ToString().PadLeft(7) + ' bytes  ' + $verdict)
@@ -400,24 +453,7 @@ function Invoke-Diagnose {
 	Add-Line ''
 	Add-Line '[로그에서 뽑은 요리 관련 줄]'
 
-	$docs = [Environment]::GetFolderPath('MyDocuments')
-	$roots = @()
-	if ($docs) { $roots += (Join-Path $docs 'Klei\DoNotStarveTogether') }
-	if ($env:USERPROFILE) {
-		$roots += (Join-Path $env:USERPROFILE 'Documents\Klei\DoNotStarveTogether')
-		$roots += (Join-Path $env:USERPROFILE 'OneDrive\Documents\Klei\DoNotStarveTogether')
-		$roots += (Join-Path $env:USERPROFILE '문서\Klei\DoNotStarveTogether')
-	}
-
-	$logs = New-Object System.Collections.Generic.List[string]
-	foreach ($root in ($roots | Select-Object -Unique)) {
-		if (-not (Test-Path -LiteralPath $root)) { continue }
-		try {
-			foreach ($f in (Get-ChildItem -LiteralPath $root -Recurse -Include 'client_log.txt', 'server_log.txt' -ErrorAction SilentlyContinue)) {
-				if (-not $logs.Contains($f.FullName)) { $logs.Add($f.FullName) }
-			}
-		} catch { }
-	}
+	$logs = Get-DstLogs
 
 	if ($logs.Count -eq 0) {
 		Add-Line '  로그 파일을 찾지 못했습니다.'
@@ -439,11 +475,37 @@ function Invoke-Diagnose {
 		foreach ($h in $hits) { Add-Line ('    ' + $h.Line.Trim()) }
 	}
 
-	# ── 저장 ───────────────────────────────────────────────────────────────
+	return $script:reportLines
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  개인정보 가리기 - 로그와 경로에 계정 이름이나 아이디가 섞여 나갑니다
+# ══════════════════════════════════════════════════════════════════════════════
+
+function Protect-Text($text) {
+	if ([string]::IsNullOrEmpty($text)) { return $text }
+	$t = $text
+
+	foreach ($name in @($env:USERNAME, $env:USERDOMAIN)) {
+		if (-not [string]::IsNullOrWhiteSpace($name) -and $name.Length -ge 3) {
+			$t = $t -replace [regex]::Escape($name), '<USER>'
+		}
+	}
+
+	$t = $t -replace 'KU_[A-Za-z0-9_\-]{4,}', 'KU_<가림>'
+	$t = $t -replace '(?i)(token|password|passwd|session|secret|api[_-]?key)(\s*[=:]\s*)\S+', '$1$2<가림>'
+	$t = $t -replace '\b\d{17}\b', '<스팀ID>'
+
+	return $t
+}
+
+function Invoke-Diagnose {
+	$lines = Build-Report
+
 	$out = Join-Path $PackageRoot '진단결과.txt'
 	$saved = $false
 	try {
-		[IO.File]::WriteAllText($out, ($report -join "`r`n"), (New-Object System.Text.UTF8Encoding($true)))
+		[IO.File]::WriteAllText($out, (Protect-Text ($lines -join "`r`n")), (New-Object System.Text.UTF8Encoding($true)))
 		$saved = $true
 	} catch {
 		Write-Host ('파일로 저장하지 못했습니다: ' + $_.Exception.Message) -ForegroundColor Red
@@ -458,10 +520,141 @@ function Invoke-Diagnose {
 	}
 }
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  수집 - 필요한 파일만 골라 담아 zip 하나로 만듭니다
+# ══════════════════════════════════════════════════════════════════════════════
+
+# 요리 문제를 보려면 이 파일들이면 충분합니다. 나머지는 담지 않습니다.
+$COLLECT_FILES = @(
+	'modinfo.lua',
+	'scripts\npc_tuning.lua',
+	'scripts\npc_commands.lua',
+	'scripts\npc\npc_cooking_planner.lua',
+	'scripts\npc\npc_cooking_recipe_scorer.lua',
+	'scripts\npc\npc_cooking_ingredient_finder.lua',
+	'scripts\npc\npc_cooking_recipes.lua',
+	'scripts\npc\npc_hof_cooking.lua',
+	'scripts\npc\npc_utils.lua',
+	'scripts\npc\characters\warly.lua'
+)
+
+function Invoke-Collect {
+	Write-Head '요리 문제 자료 모으기'
+
+	$stamp   = (Get-Date).ToString('yyyyMMdd_HHmmss')
+	$staging = Join-Path ([IO.Path]::GetTempPath()) ('npchof_collect_' + $stamp)
+
+	New-Item -ItemType Directory -Path $staging -Force | Out-Null
+
+	# 1) 상태 보고서
+	Write-Host '상태를 살펴보는 중...'
+	Write-Host ''
+	$lines = Build-Report
+	[IO.File]::WriteAllText((Join-Path $staging '진단결과.txt'),
+		(Protect-Text ($lines -join "`r`n")), (New-Object System.Text.UTF8Encoding($true)))
+
+	# 2) 모드 파일
+	$folders = Get-ModFolders
+	$copied  = 0
+	$index   = 0
+
+	foreach ($folder in $folders) {
+		$index = $index + 1
+		$dest  = Join-Path $staging ('mod' + $index)
+
+		[IO.File]::WriteAllText((Join-Path $staging ('mod' + $index + '_경로.txt')),
+			(Protect-Text $folder), (New-Object System.Text.UTF8Encoding($true)))
+
+		foreach ($rel in $COLLECT_FILES) {
+			$src = Join-Path $folder $rel
+			if (-not (Test-Path -LiteralPath $src)) { continue }
+			try {
+				$target = Join-Path $dest $rel
+				$dir    = Split-Path -Parent $target
+				if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+				Copy-Item -LiteralPath $src -Destination $target -Force
+				$copied = $copied + 1
+				Write-Ok $rel
+			} catch {
+				Write-Fail ($rel + ' : ' + $_.Exception.Message)
+			}
+		}
+	}
+
+	# 3) 로그에서 요리 관련 줄만
+	$logDir = Join-Path $staging 'logs'
+	New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+
+	$wanted = '\[NPCF-HOF\]|\[Cooking\]|\[CookingPlanner\]|烹饪|npc_hof_cooking|NPCCookingBehavior|\[string "\.\.\./npc'
+	$logCount = 0
+
+	foreach ($log in (Get-DstLogs)) {
+		try {
+			$hits = Select-String -LiteralPath $log -Pattern $wanted -Encoding UTF8 -ErrorAction Stop |
+				Select-Object -Last 400
+		} catch { continue }
+		if ($hits.Count -eq 0) { continue }
+
+		$logCount = $logCount + 1
+		$name = 'log' + $logCount + '_' + (Split-Path -Leaf $log)
+		$body = (Protect-Text $log) + "`r`n" + ('-' * 60) + "`r`n" +
+			(Protect-Text (($hits | ForEach-Object { $_.Line.Trim() }) -join "`r`n"))
+		[IO.File]::WriteAllText((Join-Path $logDir $name), $body, (New-Object System.Text.UTF8Encoding($true)))
+		Write-Ok ('로그 ' + $name + ' (' + $hits.Count + ' 줄)')
+	}
+
+	# 4) 어떤 모드를 켜고 있는지
+	foreach ($root in (Get-KleiRoots)) {
+		try {
+			foreach ($f in (Get-ChildItem -LiteralPath $root -Recurse -Include 'modoverrides.lua' -ErrorAction SilentlyContinue |
+					Select-Object -First 4)) {
+				$rel = 'mods_' + ($f.FullName -replace '[^A-Za-z0-9]', '_')
+				if ($rel.Length -gt 60) { $rel = $rel.Substring($rel.Length - 60) }
+				Copy-Item -LiteralPath $f.FullName -Destination (Join-Path $staging ($rel + '.lua')) -Force
+				Write-Ok ('켜져 있는 모드 목록: ' + $f.Name)
+			}
+		} catch { }
+	}
+
+	# 5) 압축
+	$zip = Join-Path $PackageRoot ('NPC_HOF_수집_' + $stamp + '.zip')
+
+	try {
+		if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
+		Compress-Archive -Path (Join-Path $staging '*') -DestinationPath $zip -Force
+	} catch {
+		Write-Fail ('압축에 실패했습니다: ' + $_.Exception.Message)
+		Write-Host ('모아 둔 폴더를 직접 압축해 주세요: ' + $staging)
+		return
+	}
+
+	try { Remove-Item -LiteralPath $staging -Recurse -Force } catch { }
+
+	$size = 0
+	try { $size = [math]::Round((Get-Item -LiteralPath $zip).Length / 1KB) } catch { }
+
+	Write-Head '다 모았습니다'
+	Write-Host ('  파일 ' + $copied + '개 + 로그 ' + $logCount + '개')
+	Write-Host ''
+	Write-Host ('  ' + $zip) -ForegroundColor Green
+	Write-Host ('  (' + $size + ' KB)')
+	Write-Host ''
+	Write-Host '  이 zip 파일 하나만 그대로 보내 주시면 됩니다.'
+	Write-Host '  계정 이름과 스팀 ID 같은 것은 <가림> 으로 바꿔서 담았습니다.'
+	Write-Host ''
+
+	try { Start-Process explorer.exe ('/select,"' + $zip + '"') } catch { }
+}
+
 if ($env:NPCHOF_DOTSOURCE_ONLY -eq '1') { return }
 
 if ($Action -eq 'diagnose') {
 	Invoke-Diagnose
+	exit 0
+}
+
+if ($Action -eq 'collect') {
+	Invoke-Collect
 	exit 0
 }
 

@@ -1,16 +1,17 @@
 # test_patcher.ps1
 #
-# Exercises the install / restore logic in patch/templates/tools/patch.ps1
-# against a real copy of NPC Friends' npc_cooking_planner.lua.
+# Exercises install / restore / report / collect in
+# patch/templates/tools/patch.ps1 against a real copy of NPC Friends.
 #
-#   pwsh tests/test_patcher.ps1 -Planner <path to a pristine npc_cooking_planner.lua>
+#   pwsh tests/test_patcher.ps1 -ModRoot <a pristine NPC Friends 3684000581 folder>
 #
 # Checks that installing adds exactly one hook, that installing twice is a
-# no-op, that restoring from the backup gives back a byte-identical file, and
-# that restoring by marker-stripping does too when the backup is gone.
+# no-op, that restoring gives back a byte-identical file both from the backup
+# and by stripping the markers, that the "is this file stock?" report tells the
+# three cases apart, and that collect produces a zip with what we asked for.
 
 param(
-	[Parameter(Mandatory = $true)][string]$Planner,
+	[Parameter(Mandatory = $true)][string]$ModRoot,
 	[string]$Luac = 'luac5.1'
 )
 
@@ -23,8 +24,10 @@ $script  = Join-Path (Join-Path $package 'tools') 'patch.ps1'
 if (-not (Test-Path -LiteralPath $script)) {
 	throw "build the package first: python3 patch/build.py  (missing $script)"
 }
+
+$Planner = Join-Path $ModRoot 'scripts/npc/npc_cooking_planner.lua'
 if (-not (Test-Path -LiteralPath $Planner)) {
-	throw "no such planner file: $Planner"
+	throw "not an NPC Friends folder (no scripts/npc/npc_cooking_planner.lua): $ModRoot"
 }
 
 $failures = 0
@@ -37,29 +40,31 @@ function Check($label, $ok, $detail) {
 	}
 }
 
-# ── a throwaway copy of the mod tree ────────────────────────────────────────
+# ── a throwaway copy of the whole mod tree ──────────────────────────────────
 $sandbox = Join-Path ([IO.Path]::GetTempPath()) ("npchof_test_" + [Guid]::NewGuid().ToString("N"))
 $modDir  = Join-Path $sandbox '3684000581'
-$npcDir  = Join-Path (Join-Path $modDir 'scripts') 'npc'
-New-Item -ItemType Directory -Path $npcDir -Force | Out-Null
+New-Item -ItemType Directory -Path $modDir -Force | Out-Null
 
+Copy-Item -LiteralPath (Join-Path $ModRoot 'scripts') -Destination $modDir -Recurse -Force
+foreach ($extra in @('modinfo.lua')) {
+	$src = Join-Path $ModRoot $extra
+	if (Test-Path -LiteralPath $src) { Copy-Item -LiteralPath $src -Destination $modDir -Force }
+}
+
+$npcDir      = Join-Path (Join-Path $modDir 'scripts') 'npc'
 $plannerCopy = Join-Path $npcDir 'npc_cooking_planner.lua'
-Copy-Item -LiteralPath $Planner -Destination $plannerCopy -Force
+$added       = Join-Path $npcDir 'npc_hof_cooking.lua'
+$pristine    = [IO.File]::ReadAllBytes($plannerCopy)
 
-$pristine = [IO.File]::ReadAllBytes($plannerCopy)
-
+# Dot-source with the sandbox as the target folder, so nothing touches a real install.
 $env:NPCHOF_DOTSOURCE_ONLY = '1'
-. $script
+. $script -ModFolder $modDir
 $env:NPCHOF_DOTSOURCE_ONLY = $null
 
-# The dot-sourced script computed its paths from its own location, which is
-# exactly what we want: it reads files/npc_hof_cooking.lua out of the package.
 Write-Host ''
 Write-Host '=== 1. install ==='
 $ok = Install-One $modDir
 Check 'install reports success' $ok
-
-$added = Join-Path $npcDir 'npc_hof_cooking.lua'
 Check 'npc_hof_cooking.lua was copied in' (Test-Path -LiteralPath $added)
 
 $patched = [IO.File]::ReadAllText($plannerCopy)
@@ -73,10 +78,8 @@ Check 'exactly one hook' ($hookCount -eq 1) "count=$hookCount"
 $returnIdx = $patched.LastIndexOf('return CookingPlanner')
 $hookIdx   = $patched.IndexOf('require("npc/npc_hof_cooking")')
 Check 'hook sits before the final return' ($hookIdx -lt $returnIdx) "hook=$hookIdx return=$returnIdx"
-
 Check 'no BOM was introduced' (([IO.File]::ReadAllBytes($plannerCopy))[0] -ne 0xEF)
 
-# ── both files must still be valid Lua 5.1 ──────────────────────────────────
 foreach ($f in @($plannerCopy, $added)) {
 	$out = & $Luac -p $f 2>&1
 	Check ("still parses as Lua 5.1: " + (Split-Path -Leaf $f)) ($LASTEXITCODE -eq 0) ($out -join ' ')
@@ -90,7 +93,55 @@ $after = [IO.File]::ReadAllBytes($plannerCopy)
 Check 'second install leaves the file untouched' (-not (Compare-Object $before $after -SyncWindow 0))
 
 Write-Host ''
-Write-Host '=== 3. restore from backup ==='
+Write-Host '=== 3. the report tells stock from patched ==='
+# Regression guard: PowerShell variable names are case-insensitive, so writing
+# `$stock = $STOCK[$rel]` inside the loop silently destroys the lookup table
+# and every file after the first reads as modified.
+$reportText = (Build-Report) -join "`n"
+
+Check 'planner reads as "stock + our one line"' `
+	($reportText -match 'npc_cooking_planner\.lua\s+\d+ bytes\s+원본 \+ 우리 한 줄')
+Check 'our file and hook are both reported present' `
+	($reportText.Contains('npc_hof_cooking.lua 있음') -and $reportText.Contains('npc_cooking_planner.lua 안에 있음'))
+
+foreach ($name in @('npc_tuning.lua', 'npc_commands.lua', 'npc_cooking_recipes.lua',
+                    'npc_cooking_recipe_scorer.lua', 'npc_cooking_ingredient_finder.lua',
+                    'npc_utils.lua', 'npc_item_config.lua')) {
+	Check ("untouched file reads as stock: " + $name) `
+		($reportText -match ([regex]::Escape($name) + '\s+\d+ bytes\s+원본 그대로'))
+}
+
+Write-Host ''
+Write-Host '=== 4. a third-party edit is reported as such ==='
+$tuning = Join-Path (Join-Path $modDir 'scripts') 'npc_tuning.lua'
+Add-Content -LiteralPath $tuning -Value "`n-- pretend another patch edited this file`n"
+$reportText2 = (Build-Report) -join "`n"
+Check 'edited file reads as "modified by another patch"' `
+	($reportText2 -match 'npc_tuning\.lua\s+\d+ bytes\s+다른 패치가 고침')
+
+Write-Host ''
+Write-Host '=== 5. collect produces a zip with what we asked for ==='
+Invoke-Collect | Out-Null
+
+$zips = @(Get-ChildItem -LiteralPath $package -Filter 'NPC_HOF_수집_*.zip' -ErrorAction SilentlyContinue)
+Check 'a zip was produced' ($zips.Count -ge 1) ("count=" + $zips.Count)
+
+if ($zips.Count -ge 1) {
+	Add-Type -AssemblyName System.IO.Compression.FileSystem
+	$zip = [IO.Compression.ZipFile]::OpenRead($zips[0].FullName)
+	try {
+		$names = $zip.Entries | ForEach-Object { $_.FullName }
+		Check 'zip carries the report' (($names -join '|').Contains('진단결과.txt'))
+		foreach ($want in @('npc_cooking_planner.lua', 'npc_hof_cooking.lua', 'npc_tuning.lua', 'warly.lua')) {
+			Check ("zip carries " + $want) (($names -join '|').Contains($want))
+		}
+	} finally { $zip.Dispose() }
+
+	foreach ($z in $zips) { Remove-Item -LiteralPath $z.FullName -Force }
+}
+
+Write-Host ''
+Write-Host '=== 6. restore from backup ==='
 $ok = Restore-One $modDir
 Check 'restore reports success' $ok
 Check 'added file was removed' (-not (Test-Path -LiteralPath $added))
@@ -98,7 +149,7 @@ Check 'planner is byte-identical to the original' `
 	(-not (Compare-Object $pristine ([IO.File]::ReadAllBytes($plannerCopy)) -SyncWindow 0))
 
 Write-Host ''
-Write-Host '=== 4. restore with no backup (marker stripping) ==='
+Write-Host '=== 7. restore with no backup (marker stripping) ==='
 Install-One $modDir | Out-Null
 Get-ChildItem -LiteralPath (Join-Path $package '_backup') -File | Remove-Item -Force
 $ok = Restore-One $modDir
@@ -107,9 +158,8 @@ Check 'planner is byte-identical after stripping markers' `
 	(-not (Compare-Object $pristine ([IO.File]::ReadAllBytes($plannerCopy)) -SyncWindow 0))
 
 Write-Host ''
-Write-Host '=== 5. a planner without the expected return is refused ==='
-$broken = Join-Path $npcDir 'npc_cooking_planner.lua'
-[IO.File]::WriteAllText($broken, "local X = {}`nreturn X`n")
+Write-Host '=== 8. a planner without the expected return is refused ==='
+[IO.File]::WriteAllText($plannerCopy, "local X = {}`nreturn X`n")
 $ok = Install-One $modDir
 Check 'refuses to guess when the file shape is unknown' (-not $ok)
 

@@ -192,6 +192,22 @@ get_containers_fn = function(inst)
 서버 로그(`[NPCF-HOF]` 줄)에는 더 자세히 나옵니다 — 본 컨테이너 목록, 각 상자의 재료 개수,
 그리고 재료가 아닌 것으로 판정된 아이템 이름까지.
 
+### 그래도 모르겠으면 — `collect.bat`
+
+zip 안의 **`collect.bat`** 을 실행하면, 문제를 보는 데 필요한 것만 알아서 골라
+zip 하나로 묶어 줍니다.
+
+- 지금 설치 상태 — 파일마다 `원본 그대로` / `원본 + 우리 한 줄` / `다른 패치가 고침` 판정
+  (창작마당 v0.3.5 SHA-256 지문과 대조. 우리 블록은 빼고 해시하므로 두 경우가 구분됩니다)
+- 요리 관련 lua 파일 10개
+- DST 로그에서 요리 관련 줄 최근 400줄
+- 켜져 있는 모드 목록(`modoverrides.lua`)
+
+계정 이름·스팀 ID는 `<가림>` 으로 치환해서 담습니다. 자동 탐색이 실패하면
+`3684000581` 폴더를 `collect.bat` 위로 드래그하면 됩니다.
+
+`diagnose.bat` 은 같은 내용을 압축 없이 `진단결과.txt` 로만 뽑습니다.
+
 ### 이전 패치가 깔려 있다면
 
 게임 안 왈리 창에 **"만들 수 있는 요리" / "다양한 음식 만들기"** 버튼이 보인다면, 그건
@@ -222,8 +238,8 @@ patch/
   build.py                          위 모듈들을 한 파일로 합쳐 zip을 만듦
   header.lua                        USER_SETTINGS 블록
   install_stub.lua                  Install(CookingPlanner) 진입점
-  templates/tools/patch.ps1         설치 · 복원 (전부 여기 있음)
-  templates/install.bat / restore.bat  얇은 실행기
+  templates/tools/patch.ps1         설치 · 복원 · 진단 · 수집 (전부 여기 있음)
+  templates/*.bat                   install / restore / diagnose / collect 실행기
 
 tests/
   dst_stub.lua                      DST 요리 시스템 재현 (바닐라 + 모드 요리)
@@ -239,7 +255,7 @@ tests/
 ```bash
 python3 patch/build.py        # dist/NPC_HOF_Patch.zip 생성
 tests/run_all.sh              # 문법 검사 + 단위/통합 테스트 + 성능
-tests/run_all.sh /path/to/pristine/npc_cooking_planner.lua   # 설치기 테스트까지
+tests/run_all.sh /path/to/3684000581                          # 설치기 테스트까지
 ```
 
 필요한 것: `lua5.1`, `luac5.1`, `python3`, (설치기 테스트에만) `pwsh`.

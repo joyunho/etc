@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run everything that can be checked without launching the game.
 #
-#   tests/run_all.sh [path-to-a-pristine-npc_cooking_planner.lua]
+#   tests/run_all.sh [path-to-a-pristine-NPC-Friends-3684000581-folder]
 #
 # Needs lua5.1 (same version DST runs) and, for the installer tests, pwsh.
 
@@ -12,7 +12,7 @@ cd "$(dirname "$0")/.."
 LUA=${LUA:-lua5.1}
 LUAC=${LUAC:-luac5.1}
 PWSH=${PWSH:-pwsh}
-PLANNER=${1:-}
+MODROOT=${1:-}
 
 fail=0
 step() { printf '\n\033[1m== %s ==\033[0m\n' "$1"; }
@@ -47,9 +47,9 @@ step "Performance"
 step "Installer tests"
 if ! command -v "$PWSH" >/dev/null 2>&1; then
 	printf '   \033[33mSKIP\033[0m pwsh not installed\n'
-elif [ -z "$PLANNER" ]; then
-	printf '   \033[33mSKIP\033[0m pass a pristine npc_cooking_planner.lua as $1\n'
-elif "$PWSH" -NoProfile -File tests/test_patcher.ps1 -Planner "$PLANNER" -Luac "$LUAC"; then
+elif [ -z "$MODROOT" ]; then
+	printf '   \033[33mSKIP\033[0m pass a pristine NPC Friends folder as $1\n'
+elif "$PWSH" -NoProfile -File tests/test_patcher.ps1 -ModRoot "$MODROOT" -Luac "$LUAC"; then
 	ok "tests/test_patcher.ps1"
 else
 	bad "tests/test_patcher.ps1"

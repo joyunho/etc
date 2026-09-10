@@ -8,6 +8,7 @@ file for NPC Friends, then assembles the ready-to-run zip:
         install.bat            <- double-click this
         restore.bat            <- undo
         diagnose.bat           <- dump the current state to 진단결과.txt
+        collect.bat            <- pack everything needed for support into one zip
         README.txt
         files/npc_hof_cooking.lua
         tools/patch.ps1
@@ -137,6 +138,27 @@ NPC Friends 의 왈리 NPC 가 Heap of Foods 를 비롯한 음식 모드의 요�
   원본은 설치할 때 _backup 폴더에 보관됩니다.
 
 
+[ 문제가 생겼을 때 - collect.bat ]
+
+  collect.bat 을 더블클릭하면, 문제를 보는 데 필요한 것만 알아서 골라
+  zip 하나로 묶어 줍니다. 그 zip 만 보내 주시면 됩니다.
+
+  담기는 것:
+    - 지금 설치 상태 (파일별로 원본인지 / 다른 패치가 고쳤는지 판정)
+    - 요리 관련 lua 파일 10개
+    - DST 로그에서 요리 관련 줄만 최근 400줄
+    - 켜져 있는 모드 목록 (modoverrides.lua)
+
+  계정 이름, 스팀 ID 같은 것은 <가림> 으로 바꿔서 담습니다.
+
+  모드 폴더를 못 찾으면, 3684000581 폴더를 collect.bat 위로
+  드래그해서 놓으시면 됩니다.
+
+  로그가 비어 있으면 files\npc_hof_cooking.lua 의 debug 를 true 로
+  바꾸고 install.bat 을 다시 실행한 뒤, 게임에서 요리를 몇 번 시켜 보고
+  collect.bat 을 실행해 주세요. NPC Friends 자체 요리 로그까지 같이 켜집니다.
+
+
 [ 설정 바꾸기 ]
 
   files\\npc_hof_cooking.lua 를 메모장으로 열면 맨 위에 USER_SETTINGS 가
@@ -208,7 +230,7 @@ def main() -> None:
     )
 
     # cmd.exe wants CRLF; these two are ASCII-only on purpose.
-    for name in ("install.bat", "restore.bat", "diagnose.bat"):
+    for name in ("install.bat", "restore.bat", "diagnose.bat", "collect.bat"):
         text = (PATCH / "templates" / name).read_text(encoding="utf-8")
         text.encode("ascii")  # fail the build if Korean sneaks in
         (BUILD / name).write_bytes(text.replace("\n", "\r\n").encode("ascii"))
