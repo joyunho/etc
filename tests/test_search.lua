@@ -65,8 +65,7 @@ local function RunSession(label, cfg, passes, existing)
 	print(string.format("\n%s", label))
 	print(string.format("  passes=%d  chosen=%d  distinct=%d  modded=%d",
 		passes, #chosen, n_distinct, mod_hits))
-	print(string.format("  CalculateRecipe: first pass=%d, total=%d",
-		first_pass_calls or 0, Stub.Calls()))
+	print(string.format("  cooking.CalculateRecipe calls: %d (must stay 0)", Stub.Calls()))
 
 	local names = {}
 	for name, count in pairs(distinct) do names[#names + 1] = name .. " x" .. count end
@@ -85,9 +84,9 @@ check("rotates through several dishes", r1.n_distinct >= 5, tostring(r1.n_distin
 check("skips the excluded monsterlasagna", r1.distinct["monsterlasagna"] == nil)
 check("skips the blacklisted ratatouille", r1.distinct["ratatouille"] == nil)
 check("never cooks wetgoop", r1.distinct["wetgoop"] == nil)
-check("warm passes are cheaper than the cold one",
-	r1.first > (r1.calls - r1.first) / 24,
-	string.format("first=%d avg_rest=%.0f", r1.first, (r1.calls - r1.first) / 24))
+-- cooking.CalculateRecipe ends in math.random(): using it as a search oracle
+-- would be both unrepeatable and a source of world RNG churn.
+check("never calls the randomised cooking.CalculateRecipe", r1.calls == 0, tostring(r1.calls))
 
 print("\n=========== 2. variety off repeats itself ===========")
 local r2 = RunSession("off/medium", { variety = "off", budget = "medium" }, 25)
@@ -149,7 +148,87 @@ end
 check("a protected ingredient is never picked", not used_protected)
 Core.Configure{ protect = {} }
 
-print("\n=========== 7. degenerate inputs ===========")
+print("\n=========== 7. a stable pantry must not go dead ===========")
+-- The failure this guards against: discovery used to stop for good once the
+-- candidate cache hit its cap, so as dishes reached the same-dish limit the
+-- chef ran out of things it knew about and silently handed back to NPC
+-- Friends' vanilla-only chooser -- while hundreds of dishes were still
+-- cookable from the very same pantry.
+Core.Configure{ variety = "medium", budget = "medium", same_dish_max = 3, protect = {} }
+Search.ResetCache(); Variety.Reset()
+
+local stock, cooked, seen, unique, nils, first_nil = {}, 0, {}, 0, 0, nil
+
+for pass = 1, 200 do
+	local card = Search.Choose(Stub.PANTRY, stock, true, Stub.COOKER)
+	if card == nil then
+		nils = nils + 1
+		if first_nil == nil then first_nil = pass end
+	else
+		cooked = cooked + 1
+		stock[card.name] = (stock[card.name] or 0) + 1
+		if seen[card.name] == nil then seen[card.name] = true; unique = unique + 1 end
+	end
+end
+
+-- How many dishes this pantry can make at all: start fresh every time and
+-- block everything already found, so each pass is forced to name something new
+-- until there is nothing left. That is the number the stable-pantry run above
+-- has to come close to.
+local reachable, n_reachable = {}, 0
+for pass = 1, 120 do
+	Search.ResetCache(); Variety.Reset()
+
+	local blocked = {}
+	for name in pairs(reachable) do blocked[name] = 99 end
+
+	local card = Search.Choose(Stub.PANTRY, blocked, true, Stub.COOKER)
+	if card == nil then break end
+
+	if reachable[card.name] == nil then
+		reachable[card.name] = true
+		n_reachable = n_reachable + 1
+	end
+end
+
+print(string.format("  over 200 passes: cooked=%d  distinct=%d  gave up=%d  first give-up at pass %s",
+	cooked, unique, nils, tostring(first_nil)))
+print(string.format("  reachable from this pantry at all: %d", n_reachable))
+
+-- Every dish it can find, cooked up to the cap, is unique * same_dish_max.
+check("keeps cooking until the pantry is genuinely used up",
+	cooked >= unique * 3 - 2, string.format("cooked=%d unique=%d", cooked, unique))
+check("finds a wide menu from a stable pantry", unique >= 12, tostring(unique))
+-- The regression: discovery froze at the candidate cap, so a long run found far
+-- fewer dishes than a series of fresh starts would.
+check("a long run finds as much as fresh starts do",
+	unique >= math.floor(n_reachable * 0.8),
+	string.format("long run=%d  reachable=%d", unique, n_reachable))
+check("still never touches the randomised resolver", Stub.Calls() == 0, tostring(Stub.Calls()))
+
+Core.Configure{ same_dish_max = 0 }
+
+print("\n=========== 8. the panel's food quota is honoured ===========")
+-- NPC Friends stops cooking altogether once COOK_MAX_TOTAL dishes are stored
+-- ("음식 최대 개수" in the panel). We replace the function that enforced it, so
+-- ignoring it here would silently kill a button the player can see.
+Core.Configure{ variety = "medium", budget = "medium", same_dish_max = 0 }
+Search.ResetCache(); Variety.Reset()
+
+Stub.NPC_TUNING.COOK_MAX_TOTAL = 5
+check("cooks while the larder is under the quota",
+	Search.Choose(Stub.PANTRY, { meatballs = 2 }, true, Stub.COOKER) ~= nil)
+
+Search.ResetCache(); Variety.Reset()
+check("stops once the quota is reached",
+	Search.Choose(Stub.PANTRY, { meatballs = 3, honeyham = 2 }, true, Stub.COOKER) == nil)
+
+Stub.NPC_TUNING.COOK_MAX_TOTAL = 0
+Search.ResetCache(); Variety.Reset()
+check("0 means no limit",
+	Search.Choose(Stub.PANTRY, { meatballs = 99 }, true, Stub.COOKER) ~= nil)
+
+print("\n=========== 9. degenerate inputs ===========")
 Search.ResetCache(); Variety.Reset()
 check("empty pantry returns nil", Search.Choose({}, {}, true, Stub.COOKER) == nil)
 check("unknown cooker returns nil", Search.Choose(Stub.PANTRY, {}, true, "no_such_pot") == nil)

@@ -179,6 +179,15 @@ function Diag.ExplainFailure(inst, containers, cookpots, is_warly)
 		return
 	end
 
+	local total_max = Core.TotalDishMax()
+	if total_max ~= nil then
+		Core.Info(string.format("  '음식 최대 개수' 설정: %d개", total_max))
+		Core.Info("     저장된 요리가 이 개수에 닿으면 왈리는 요리를 아예 멈춥니다.")
+		Core.Info("     패널에서 이 값을 올리거나 0(제한 없음)으로 바꿔 보세요.")
+		Say(inst, string.format("요리를 %d개까지만 만들라고 하셨어요.", total_max))
+		return
+	end
+
 	Core.Info(string.format("  >> 재료는 %d종 있는데 만들 수 있는 요리를 못 찾았습니다.", kinds))
 	Core.Info("     '같은 요리 최대 개수'가 낮으면 이미 다 채워서 못 만들 수 있습니다. 값을 올려 보세요.")
 	Core.Info("     그래도 계속 이러면 USER_SETTINGS 의 budget 을 \"high\" 로 바꿔 보세요.")

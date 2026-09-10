@@ -96,6 +96,8 @@ check("installing twice is a no-op", Patch.Install(Planner) == true)
 
 print("\n=========== 2. it cooks modded dishes, with variety ===========")
 
+Stub.ResetCalls()
+
 local menu, distinct, mod_hits, n_distinct = {}, {}, 0, 0
 
 for i = 1, 25 do
@@ -140,6 +142,18 @@ check("never cooked the excluded monsterlasagna", distinct["monsterlasagna"] == 
 check("never cooked the blacklisted ratatouille", distinct["ratatouille"] == nil)
 check("never cooked wetgoop", distinct["wetgoop"] == nil)
 check("no meatball-first bias", (distinct["meatballs"] or 0) <= 3, tostring(distinct["meatballs"]))
+
+-- The real cooking.CalculateRecipe breaks ties with math.random(), so using it
+-- to explore combinations would be unrepeatable and would churn world RNG.
+check("never calls the randomised cooking.CalculateRecipe", Stub.Calls() == 0, tostring(Stub.Calls()))
+
+-- The card_def dishes are the ones Heap of Foods states outright; they must be
+-- found by the exact path, not left to the bounded search to stumble on.
+local carded = 0
+for _, d in ipairs(Stub.MOD_DISHES) do
+	if d[7] ~= nil and distinct[d[1]] then carded = carded + 1 end
+end
+check("dishes that state their own ingredients get cooked", carded >= 3, tostring(carded))
 
 print("\n=========== 3. falls back to the original when it cannot help ===========")
 

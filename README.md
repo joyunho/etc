@@ -58,20 +58,23 @@ end
 ## 어떻게 고쳤나
 
 요리 200개를 더 적어 넣는 대신, **요리 이름을 하나도 적지 않는** 방식으로 뒤집었습니다.
+두 경로를 씁니다.
 
-왈리가 손댈 수 있는 재료로 4칸 조합을 만들어 보고, 게임 자체의 요리 판정 함수에
-"이 조합은 무슨 요리가 되나?" 하고 그대로 물어봅니다.
+**1. `card_def` 읽기 (주 경로)** — 레시피가 스스로 재료를 밝혀 둔 경우가 있습니다.
 
 ```lua
-local product, cooktime = cooking.CalculateRecipe(cooker_name, names)
+card_def = {ingredients = {{"kyno_coffeebeans_cooked", 3}, {"honey", 1}}}
 ```
 
-정상적인 방법(`AddCookerRecipe` / `AddIngredientValues`)으로 등록된 음식 모드라면
-무엇이든 자동으로 잡힙니다. Heap of Foods가 업데이트로 요리를 더 추가해도 이 패치는
-손댈 필요가 없습니다.
+Heap of Foods의 크록팟 요리 **248개 전부**가 이걸 갖고 있고, 그중 247개가 4칸을 정확히
+채웁니다. 그대로 읽으면 되니 정확하고 쌉니다.
 
-> 참고로 이 접근은 Heap of Foods 작성자 본인이 그 모드의 요리 로봇
-> (`scripts/brains/cookrobotbrain.lua`)에서 쓰는 방식과 같습니다.
+**2. 조합 탐색 (보조)** — 카드가 없는 요리(대부분 바닐라)만 탐색으로 찾습니다.
+서버가 멈추지 않도록 예산 상한을 둡니다.
+
+두 경로 모두 게임 자체의 `recipe.test` 를 직접 돌려 확인합니다. 정상적인 방법
+(`AddCookerRecipe` / `AddIngredientValues`)으로 등록된 음식 모드라면 무엇이든 자동으로
+잡히고, Heap of Foods가 업데이트로 요리를 더 추가해도 손댈 필요가 없습니다.
 
 그 위에 **다양성 점수**를 얹었습니다.
 
@@ -97,18 +100,34 @@ local product, cooktime = cooking.CalculateRecipe(cooker_name, names)
 
 `off` 에서 25번 내리 같은 요리가 나오는 게 바로 원래 증상입니다.
 
+### 무작위 함수를 오라클로 쓰지 않는 이유
+
+`cooking.CalculateRecipe` 는 마지막에 이렇게 끝납니다 (HoF가 그대로 복제한 브루잉 코드에서 확인):
+
+```lua
+local val = math.random() * total    -- 동점 레시피 사이 가중치 추첨
+```
+
+탐색에 쓰면 **같은 재료 4개가 두 번 다른 답을 내고**, 한 번 계획할 때마다 월드 RNG를
+수백 번 흔듭니다. 그래서 이 패치는 그 함수를 쓰지 않고, 게임의 `recipe.test` 를 직접
+돌려 최상위 우선순위 묶음만 추립니다 — `cooking.lua` 의 `GetCandidateRecipes` 와 같은 방식이고,
+결정적이며 RNG를 건드리지 않습니다. 테스트가 호출 횟수 0을 검사합니다.
+
+한 조합이 여러 요리를 낼 수 있으면 냄비가 추첨하므로, **그 요리만 나오는 조합**에
+가산점을 줘서 계획대로 나오게 합니다.
+
 ### 서버는 안 무거운가
 
-Heap of Foods 실제 규모(한 조리기구에 레시피 250종, 재료 40종 창고)에서 측정했습니다.
+Heap of Foods 실제 규모(한 조리기구에 레시피 250종, 재료 40종 창고, 3분의 2가 카드 보유):
 
 | 탐색량 | 최초 1회 | 이후 반복 |
 |---|---|---|
-| `low` | 14 ms | 4 ms |
-| `medium` | 32 ms | 10 ms |
-| `high` | 72 ms | 19 ms |
+| `low` | 14 ms | 7 ms |
+| `medium` | 13 ms | 19 ms |
+| `high` | 13 ms | 33 ms |
 
-탐색 횟수에 상한을 두고, 손이 닿는 재료 종류가 바뀔 때만 다시 전체 탐색을 합니다.
-그 사이는 전부 "이후 반복" 쪽 비용입니다. 직접 재보시려면 `lua5.1 tests/perf.lua`.
+카드 경로가 정확하고 싸서 최초 비용이 탐색량과 거의 무관합니다.
+직접 재보시려면 `lua5.1 tests/perf.lua`.
 
 ---
 
@@ -151,6 +170,10 @@ pcall(function() require("npc/npc_hof_cooking").Install(CookingPlanner) end)
 | `explain` | `true` | 요리를 못 할 때 왈리가 그 이유를 직접 말함 |
 | `debug` | `false` | 고른 이유까지 서버 로그에 출력 |
 | `protect` | `{}` | 절대 재료로 쓰지 않을 아이템 |
+
+패널의 **"같은 요리 최대 개수"** 와 **"음식 최대 개수"** 는 그대로 존중합니다.
+특히 "음식 최대 개수"는 저장된 요리가 그 수에 닿으면 **요리를 아예 멈추는** 설정이라,
+왈리가 갑자기 안 만들면 이 값부터 확인해 보세요 (0 = 제한 없음).
 
 ### 알아두실 점
 

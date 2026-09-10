@@ -621,7 +621,11 @@ function Invoke-Collect {
 
 	try {
 		if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
-		Compress-Archive -Path (Join-Path $staging '*') -DestinationPath $zip -Force
+		# Compress-Archive writes backslashes as the entry separator, which the
+		# zip format does not allow and many extractors turn into one long file
+		# name. CreateFromDirectory writes '/' the way it should.
+		Add-Type -AssemblyName System.IO.Compression.FileSystem
+		[System.IO.Compression.ZipFile]::CreateFromDirectory($staging, $zip)
 	} catch {
 		Write-Fail ('압축에 실패했습니다: ' + $_.Exception.Message)
 		Write-Host ('모아 둔 폴더를 직접 압축해 주세요: ' + $staging)

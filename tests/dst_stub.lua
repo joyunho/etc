@@ -43,6 +43,9 @@ local function GetIngredientValues(names)
 	return { tags = tags, names = counts }
 end
 
+-- The patch must never call this: it ends in a weighted random pick, so it is
+-- neither repeatable nor free of world RNG. The tests assert the counter stays
+-- at zero.
 function cooking.CalculateRecipe(cooker, names)
 	calls = calls + 1
 
@@ -62,7 +65,18 @@ function cooking.CalculateRecipe(cooker, names)
 	if best == nil then
 		return "wetgoop", 0.5
 	end
-	return best.name, best.cooktime or 1
+
+	-- The real CalculateRecipe breaks ties between equal-priority recipes with
+	-- math.random(); mirror that so nothing can quietly depend on it.
+	local tied = {}
+	for _, recipe in pairs(pool) do
+		if recipe.test(cooker, ing.names, ing.tags) and (recipe.priority or 0) == best_priority then
+			tied[#tied + 1] = recipe
+		end
+	end
+	local pick = tied[math.random(#tied)]
+
+	return pick.name, pick.cooktime or 1
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -150,16 +164,25 @@ AddCookerRecipe(C, { name = "icecream", priority = 10, cooktime = 1,
 			and (t.meat or 0) == 0 and (t.veggie or 0) == 0
 	end })
 
+-- The 7th field, where present, is a card_def ingredient list -- the exact pot
+-- contents, the way every Heap of Foods recipe states them. Dishes without one
+-- can still be found, but only by the (bounded) combination search.
 Stub.MOD_DISHES = {
-	{ "kyno_pancakes",     { flour = 1, sweetener = 1 },  30, 60, 15, 12 },
-	{ "kyno_baconpie",     { bacon = 1, flour = 1 },      40, 75, 10, 12 },
-	{ "kyno_mushroomsoup", { mushrooms = 2 },             20, 50, 20, 11 },
-	{ "kyno_seafoodgumbo", { mussel = 1, fish = 1 },      30, 62, 15, 12 },
-	{ "kyno_sharkfinsoup", { fish = 2 },                  45, 75,  5, 13 },
+	{ "kyno_pancakes",     { flour = 1, sweetener = 1 },  30, 60, 15, 12,
+	  { { "kyno_flour", 2 }, { "honey", 1 }, { "berries", 1 } } },
+	{ "kyno_baconpie",     { bacon = 1, flour = 1 },      40, 75, 10, 12,
+	  { { "kyno_bacon", 1 }, { "kyno_flour", 2 }, { "carrot", 1 } } },
+	{ "kyno_mushroomsoup", { mushrooms = 2 },             20, 50, 20, 11,
+	  { { "kyno_white_cap", 4 } } },
+	{ "kyno_seafoodgumbo", { mussel = 1, fish = 1 },      30, 62, 15, 12,
+	  { { "kyno_mussel", 2 }, { "fishmeat", 1 }, { "corn", 1 } } },
+	{ "kyno_sharkfinsoup", { fish = 2 },                  45, 75,  5, 13,
+	  { { "kyno_shark_fin", 2 }, { "kyno_mussel", 1 }, { "corn", 1 } } },
 	{ "kyno_beansalad",    { beanbug = 1, veggie = 1 },   15, 37, 10, 11 },
 	{ "kyno_frenchtoast",  { bread = 1, egg = 1 },        25, 50, 12, 12 },
 	{ "kyno_syrupcake",    { syrup = 1, flour = 1 },      20, 62, 25, 13 },
-	{ "kyno_cheesecake",   { cheese = 1, sweetener = 1 }, 30, 60, 30, 13 },
+	{ "kyno_cheesecake",   { cheese = 1, sweetener = 1 }, 30, 60, 30, 13,
+	  { { "kyno_cheese", 2 }, { "honey", 1 }, { "berries", 1 } } },
 	{ "kyno_caprese",      { tomato = 1, cheese = 1 },    25, 45, 20, 12 },
 	{ "kyno_aloejuice",    { succulent = 1 },             15, 25, 25, 10 },
 	{ "kyno_coffee",       { seeds = 1, sweetener = 1 },   0, 20, 40, 11 },
@@ -172,10 +195,11 @@ Stub.MOD_DISHES = {
 }
 
 for _, d in ipairs(Stub.MOD_DISHES) do
-	local name, req, health, hunger, sanity, priority = d[1], d[2], d[3], d[4], d[5], d[6]
+	local name, req, health, hunger, sanity, priority, card = d[1], d[2], d[3], d[4], d[5], d[6], d[7]
 	AddCookerRecipe(C, {
 		name = name, priority = priority, cooktime = 1,
 		health = health, hunger = hunger, sanity = sanity,
+		card_def = card ~= nil and { ingredients = card } or nil,
 		test = function(c, n, t)
 			for tag, amount in pairs(req) do
 				if (t[tag] or 0) < amount then return false end
@@ -220,6 +244,7 @@ Stub.PANTRY = Stub.MakePool{
 -- Stand-ins for the two NPC Friends modules the patch reads.
 Stub.NPC_TUNING = {
 	COOK_SAME_DISH_MAX    = 3,
+	COOK_MAX_TOTAL        = 0,   -- 0 = no limit, as NPC Friends ships it
 	COOK_RECIPE_BLACKLIST = { wetgoop = true, ratatouille = true },
 }
 

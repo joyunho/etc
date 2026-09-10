@@ -177,6 +177,17 @@ function Core.IsDishAllowed(cooker_name, product)
 	return true
 end
 
+-- The panel's "음식 최대 개수" button. NPC Friends stops cooking altogether once
+-- this many dishes are stored; 0 means no limit. We replace the function that
+-- enforced it, so we have to enforce it ourselves or the button goes dead.
+function Core.TotalDishMax()
+	local tuning = Core.host.tuning
+	if tuning ~= nil and type(tuning.COOK_MAX_TOTAL) == "number" and tuning.COOK_MAX_TOTAL > 0 then
+		return tuning.COOK_MAX_TOTAL
+	end
+	return nil
+end
+
 function Core.SameDishMax()
 	if Core.cfg.same_dish_max ~= nil and Core.cfg.same_dish_max > 0 then
 		return Core.cfg.same_dish_max

@@ -1,8 +1,11 @@
 -- perf.lua
 --
--- Measures the cost of one planning pass at Heap of Foods scale, because the
--- whole design rests on the claim that probing the game's recipe resolver a
--- bounded number of times is cheap enough to do on a live server.
+-- Measures the cost of one planning pass at Heap of Foods scale.
+--
+-- Two paths are timed together: reading card_def (exact, one table walk) and
+-- the bounded combination search for dishes that carry no card. Two thirds of
+-- the recipes here carry a card, roughly matching a world with Heap of Foods
+-- (all 248 of its dishes do) plus vanilla (only a few dozen do).
 --
 --   lua5.1 tests/perf.lua
 --
@@ -26,7 +29,7 @@ local TAGS = {
 }
 
 local cooking = { ingredients = {}, recipes = { portablecookpot = {} } }
-local calls = 0
+local tests = 0   -- recipe.test invocations, the real unit of work
 
 function cooking.IsCookingIngredient(name)
 	return cooking.ingredients[name] ~= nil
@@ -52,13 +55,28 @@ for i = 1, RECIPE_COUNT do
 		hunger   = 25 + (i % 4) * 12.5,
 		sanity   = (i % 3) * 5,
 		test     = function(c, n, t)
+			tests = tests + 1
 			return (t[a] or 0) >= need_a and (t[b] or 0) >= 0.5
 		end,
 	}
 end
 
+-- Two thirds of them state their ingredients outright, as Heap of Foods does.
+do
+	local i = 0
+	for _, recipe in pairs(cooking.recipes.portablecookpot) do
+		i = i + 1
+		if i % 3 ~= 0 then
+			local a, b = 'ing_' .. ((i % 40) + 1), 'ing_' .. (((i * 7) % 40) + 1)
+			recipe.card_def = { ingredients = { { a, 2 }, { b, 2 } } }
+		end
+	end
+end
+
+-- Present only so nothing can silently fall back to it; the patch must not
+-- call it, because it ends in a weighted random pick.
 function cooking.CalculateRecipe(cooker, names)
-	calls = calls + 1
+	error("the patch must not call cooking.CalculateRecipe")
 
 	local tags = {}
 	for _, name in ipairs(names) do
@@ -105,28 +123,28 @@ end
 print(string.format("recipes=%d  pantry types=%d  (Lua %s)",
 	RECIPE_COUNT, PANTRY_TYPES, _VERSION))
 print("")
-print("budget   cold pass            warm pass            first dish")
-print("-------  -------------------  -------------------  ----------")
+print("budget   cold pass                 warm pass                first dish")
+print("-------  ------------------------  -----------------------  ----------")
 
 for _, budget in ipairs({ "low", "medium", "high" }) do
 	Core.Configure{ variety = "medium", budget = budget }
 	Search.ResetCache()
 	Variety.Reset()
 
-	calls = 0
+	tests = 0
 	local t0 = os.clock()
 	local card = Search.Choose(pool, {}, true, "portablecookpot")
-	local cold, cold_calls = os.clock() - t0, calls
+	local cold, cold_tests = os.clock() - t0, tests
 
-	calls = 0
+	tests = 0
 	local t1 = os.clock()
 	for _ = 1, WARM_PASSES do
 		Search.Choose(pool, {}, true, "portablecookpot")
 	end
 	local warm = (os.clock() - t1) / WARM_PASSES
 
-	print(string.format("%-7s  %6.1f ms / %4d probes  %5.1f ms / %3d probes  %s",
-		budget, cold * 1000, cold_calls, warm * 1000, calls / WARM_PASSES,
+	print(string.format("%-7s  %6.1f ms / %8d tests  %5.1f ms / %7d tests  %s",
+		budget, cold * 1000, cold_tests, warm * 1000, tests / WARM_PASSES,
 		card and card.name or "nil"))
 end
 
@@ -134,3 +152,6 @@ print("")
 print("A pass only runs when a pot is free and the chef decides to cook, and the")
 print("cold cost is paid again only when the set of ingredient types in reach")
 print("changes. Everything in between is a warm pass.")
+print("")
+print("\"tests\" counts recipe.test() calls -- the actual work. Nothing here")
+print("touches cooking.CalculateRecipe, which would perturb world RNG.")
