@@ -77,6 +77,10 @@ function Patch.TryApply()
 		tuning  = GetLoadedModule(MODULE_TUNING),
 	})
 
+	if Core.cfg.debug and Core.host.tuning ~= nil then
+		Core.host.tuning.DEBUG_COOKING = true
+	end
+
 	pcall(Diag.Attach, planner)
 
 	Patch._orig = planner.FindBestRecipe

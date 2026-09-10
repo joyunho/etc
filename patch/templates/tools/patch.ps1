@@ -14,7 +14,7 @@
 #   Windows PowerShell 5.1 (윈도우 기본 내장) 에서 동작하도록 작성했습니다.
 
 param(
-	[ValidateSet('install', 'restore')]
+	[ValidateSet('install', 'restore', 'diagnose')]
 	[string]$Action = 'install'
 )
 
@@ -78,29 +78,32 @@ function Get-SteamLibraries {
 	$roots.Add('C:\Program Files\Steam')
 
 	foreach ($root in $roots) {
-		if ([string]::IsNullOrWhiteSpace($root)) { continue }
+		# 존재하지 않는 드라이브나 이상한 경로 하나 때문에 전체가 멈추면 안 됩니다.
+		try {
+			if ([string]::IsNullOrWhiteSpace($root)) { continue }
 
-		$root = $root.TrimEnd('\')
-		if (-not $libs.Contains($root)) { $libs.Add($root) }
+			$root = $root.TrimEnd('\')
+			if (-not $libs.Contains($root)) { $libs.Add($root) }
 
-		$vdf = Join-Path $root 'steamapps\libraryfolders.vdf'
-		if (Test-Path -LiteralPath $vdf) {
-			try {
+			$vdf = Join-Path $root 'steamapps\libraryfolders.vdf'
+			if (Test-Path -LiteralPath $vdf) {
 				$text = Get-Content -Raw -LiteralPath $vdf
 				foreach ($m in [regex]::Matches($text, '"path"\s*"([^"]+)"')) {
 					$lib = ($m.Groups[1].Value -replace '\\\\', '\').TrimEnd('\')
 					if ($lib -and -not $libs.Contains($lib)) { $libs.Add($lib) }
 				}
-			} catch { }
-		}
+			}
+		} catch { }
 	}
 
 	return $libs
 }
 
 function Test-ModFolder($path) {
-	if ([string]::IsNullOrWhiteSpace($path)) { return $false }
-	return (Test-Path -LiteralPath (Join-Path (Join-Path (Join-Path $path 'scripts') 'npc') $PLANNER))
+	try {
+		if ([string]::IsNullOrWhiteSpace($path)) { return $false }
+		return (Test-Path -LiteralPath (Join-Path (Join-Path (Join-Path $path 'scripts') 'npc') $PLANNER))
+	} catch { return $false }
 }
 
 function Get-ModFolders {
@@ -114,19 +117,26 @@ function Get-ModFolders {
 
 	foreach ($lib in (Get-SteamLibraries)) {
 		foreach ($rel in $relative) {
-			$candidate = Join-Path $lib $rel
-			if ((Test-ModFolder $candidate) -and -not $found.Contains($candidate)) {
-				$found.Add($candidate)
-			}
+			try {
+				$candidate = Join-Path $lib $rel
+				if ((Test-ModFolder $candidate) -and -not $found.Contains($candidate)) {
+					$found.Add($candidate)
+				}
+			} catch { }
 		}
 
 		# 이름을 바꿔 넣은 로컬 설치본까지 훑어봅니다.
-		foreach ($modsDir in @(
-			(Join-Path $lib "steamapps\common\Don't Starve Together\mods"),
-			(Join-Path $lib "steamapps\common\Don't Starve Together Dedicated Server\mods")
-		)) {
-			if (-not (Test-Path -LiteralPath $modsDir)) { continue }
+		$modsDirs = @()
+		try {
+			$modsDirs = @(
+				(Join-Path $lib "steamapps\common\Don't Starve Together\mods"),
+				(Join-Path $lib "steamapps\common\Don't Starve Together Dedicated Server\mods")
+			)
+		} catch { $modsDirs = @() }
+
+		foreach ($modsDir in $modsDirs) {
 			try {
+				if (-not (Test-Path -LiteralPath $modsDir)) { continue }
 				foreach ($sub in (Get-ChildItem -LiteralPath $modsDir -Directory -ErrorAction Stop)) {
 					if ((Test-ModFolder $sub.FullName) -and -not $found.Contains($sub.FullName)) {
 						$found.Add($sub.FullName)
@@ -280,7 +290,180 @@ function Restore-One($modFolder) {
 #  진입점
 # ══════════════════════════════════════════════════════════════════════════════
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  진단 - 지금 설치된 상태를 통째로 뽑아서 텍스트 파일로 저장
+# ══════════════════════════════════════════════════════════════════════════════
+
+# NPC Friends v0.3.5 창작마당 원본의 지문. 파일이 손대지 않은 원본인지 판별합니다.
+$STOCK = @{
+	'scripts\npc\npc_cooking_planner.lua'           = @{ Size = 10570;  Hash = 'BD25B09A39AB8C82' }
+	'scripts\npc\npc_cooking_recipe_scorer.lua'     = @{ Size = 7845;   Hash = 'C64646CEAF5FC6F4' }
+	'scripts\npc\npc_cooking_recipes.lua'           = @{ Size = 34935;  Hash = 'B1D20F4FAF9AE031' }
+	'scripts\npc\npc_cooking_ingredient_finder.lua' = @{ Size = 26362;  Hash = '1278CBE4CB271A7F' }
+	'scripts\npc_tuning.lua'                        = @{ Size = 113904; Hash = '28B79D5B45A3B438' }
+	'scripts\npc_commands.lua'                      = @{ Size = 55752;  Hash = '23B7C3B08393CABD' }
+	'scripts\npc\npc_utils.lua'                     = @{ Size = 7980;   Hash = 'F70921D71E14F1FD' }
+	'scripts\npc\npc_item_config.lua'               = @{ Size = 24328;  Hash = 'E3A166C72462D3A6' }
+}
+
+$report = New-Object System.Collections.Generic.List[string]
+
+function Add-Line($text) { $report.Add([string]$text); Write-Host $text }
+
+function Get-ShortHash($bytes) {
+	$sha = [System.Security.Cryptography.SHA256]::Create()
+	try {
+		return ([BitConverter]::ToString($sha.ComputeHash($bytes)) -replace '-', '').Substring(0, 16)
+	} finally { $sha.Dispose() }
+}
+
+# 우리가 넣은 블록을 뺀 상태의 지문. "원본 + 우리 한 줄" 과 "다른 패치" 를 구분합니다.
+function Get-HashWithoutOurBlock($path) {
+	$file = Read-LuaFile $path
+	$pattern = '(?s)\r?\n?' + [regex]::Escape($MARK_BEGIN) + '.*?' + [regex]::Escape($MARK_END) + '\r?\n?'
+	$clean = [regex]::Replace($file.Text, $pattern, '')
+	return (Get-ShortHash ([System.Text.Encoding]::UTF8.GetBytes($clean))), $clean.Length
+}
+
+function Invoke-Diagnose {
+	Add-Line ''
+	Add-Line '=========================================================='
+	Add-Line '  NPC Friends 요리 상태 진단'
+	Add-Line ("  " + (Get-Date).ToString('yyyy-MM-dd HH:mm:ss'))
+	Add-Line '=========================================================='
+
+	$folders = Get-ModFolders
+	Add-Line ''
+	Add-Line ("[모드 폴더]  " + $folders.Count + " 곳")
+
+	if ($folders.Count -eq 0) {
+		Add-Line '  NPC Friends 를 찾지 못했습니다. 구독 후 DST 를 한 번 실행했는지 확인해 주세요.'
+	}
+
+	foreach ($folder in $folders) {
+		Add-Line ''
+		Add-Line ("  " + $folder)
+
+		$npcDir = Join-Path (Join-Path $folder 'scripts') 'npc'
+
+		# 우리 패치가 들어가 있는가
+		$added = Join-Path $npcDir $LUA_NAME
+		if (Test-Path -LiteralPath $added) {
+			Add-Line '    [우리 패치] npc_hof_cooking.lua 있음'
+			try {
+				$text = [IO.File]::ReadAllText($added)
+				foreach ($key in @('enabled', 'variety', 'budget', 'same_dish_max', 'allow_negative', 'explain', 'debug')) {
+					$m = [regex]::Match($text, ('(?m)^\s*' + $key + '\s*=\s*([^,\r\n]+)'))
+					if ($m.Success) { Add-Line ('      ' + $key.PadRight(15) + '= ' + $m.Groups[1].Value.Trim()) }
+				}
+			} catch { Add-Line ('      설정을 읽지 못했습니다: ' + $_.Exception.Message) }
+		} else {
+			Add-Line '    [우리 패치] npc_hof_cooking.lua 없음  <- 설치가 안 되어 있습니다'
+		}
+
+		$plannerPath = Join-Path $npcDir $PLANNER
+		if (Test-Path -LiteralPath $plannerPath) {
+			$hasHook = ([IO.File]::ReadAllText($plannerPath)).Contains($MARK_BEGIN)
+			Add-Line ('    [연결 코드] npc_cooking_planner.lua 안에 ' + $(if ($hasHook) { '있음' } else { '없음  <- 연결이 안 되어 있습니다' }))
+		}
+
+		# 파일별로 원본인지 아닌지
+		Add-Line '    [파일 상태]'
+		foreach ($rel in ($STOCK.Keys | Sort-Object)) {
+			$full = Join-Path $folder $rel
+			$name = Split-Path -Leaf $rel
+
+			if (-not (Test-Path -LiteralPath $full)) {
+				Add-Line ('      ' + $name.PadRight(38) + '없음')
+				continue
+			}
+
+			$bytes = [IO.File]::ReadAllBytes($full)
+			$hash  = Get-ShortHash $bytes
+			$size  = $bytes.Length
+			$stock = $STOCK[$rel]
+			$verdict = '다른 패치가 고침'
+
+			if ($hash -eq $stock.Hash) {
+				$verdict = '원본 그대로'
+			} elseif ($rel -like '*npc_cooking_planner.lua') {
+				$clean, $cleanLen = Get-HashWithoutOurBlock $full
+				if ($clean -eq $stock.Hash) { $verdict = '원본 + 우리 한 줄' }
+			}
+
+			Add-Line ('      ' + $name.PadRight(38) + $size.ToString().PadLeft(7) + ' bytes  ' + $verdict)
+		}
+	}
+
+	# ── 로그에서 요리 관련 줄만 뽑기 ────────────────────────────────────────
+	Add-Line ''
+	Add-Line '[로그에서 뽑은 요리 관련 줄]'
+
+	$docs = [Environment]::GetFolderPath('MyDocuments')
+	$roots = @()
+	if ($docs) { $roots += (Join-Path $docs 'Klei\DoNotStarveTogether') }
+	if ($env:USERPROFILE) {
+		$roots += (Join-Path $env:USERPROFILE 'Documents\Klei\DoNotStarveTogether')
+		$roots += (Join-Path $env:USERPROFILE 'OneDrive\Documents\Klei\DoNotStarveTogether')
+		$roots += (Join-Path $env:USERPROFILE '문서\Klei\DoNotStarveTogether')
+	}
+
+	$logs = New-Object System.Collections.Generic.List[string]
+	foreach ($root in ($roots | Select-Object -Unique)) {
+		if (-not (Test-Path -LiteralPath $root)) { continue }
+		try {
+			foreach ($f in (Get-ChildItem -LiteralPath $root -Recurse -Include 'client_log.txt', 'server_log.txt' -ErrorAction SilentlyContinue)) {
+				if (-not $logs.Contains($f.FullName)) { $logs.Add($f.FullName) }
+			}
+		} catch { }
+	}
+
+	if ($logs.Count -eq 0) {
+		Add-Line '  로그 파일을 찾지 못했습니다.'
+	}
+
+	$wanted = '\[NPCF-HOF\]|\[Cooking\]|\[CookingPlanner\]|烹饪|NPCCookingBehavior|npc_hof_cooking'
+
+	foreach ($log in $logs) {
+		try {
+			$hits = Select-String -LiteralPath $log -Pattern $wanted -Encoding UTF8 -ErrorAction Stop |
+				Select-Object -Last 120
+		} catch { continue }
+
+		Add-Line ''
+		Add-Line ('  --- ' + $log + '  (' + $hits.Count + ' 줄) ---')
+		if ($hits.Count -eq 0) {
+			Add-Line '    (요리 관련 줄이 없습니다. USER_SETTINGS 의 debug 를 true 로 바꾸고 다시 해보세요)'
+		}
+		foreach ($h in $hits) { Add-Line ('    ' + $h.Line.Trim()) }
+	}
+
+	# ── 저장 ───────────────────────────────────────────────────────────────
+	$out = Join-Path $PackageRoot '진단결과.txt'
+	$saved = $false
+	try {
+		[IO.File]::WriteAllText($out, ($report -join "`r`n"), (New-Object System.Text.UTF8Encoding($true)))
+		$saved = $true
+	} catch {
+		Write-Host ('파일로 저장하지 못했습니다: ' + $_.Exception.Message) -ForegroundColor Red
+	}
+
+	if ($saved) {
+		Write-Host ''
+		Write-Host ('저장했습니다: ' + $out) -ForegroundColor Green
+		Write-Host '이 파일을 그대로 보내 주시면 됩니다.' -ForegroundColor Green
+		# 메모장이 안 열려도 파일은 이미 저장되어 있습니다.
+		try { Start-Process notepad.exe $out } catch { }
+	}
+}
+
 if ($env:NPCHOF_DOTSOURCE_ONLY -eq '1') { return }
+
+if ($Action -eq 'diagnose') {
+	Invoke-Diagnose
+	exit 0
+}
 
 if ($Action -eq 'install') {
 	Write-Head 'NPC Friends x Heap of Foods - 요리 연동 패치 설치'

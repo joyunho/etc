@@ -7,6 +7,7 @@ file for NPC Friends, then assembles the ready-to-run zip:
     NPC_HOF_Patch/
         install.bat            <- double-click this
         restore.bat            <- undo
+        diagnose.bat           <- dump the current state to 진단결과.txt
         README.txt
         files/npc_hof_cooking.lua
         tools/patch.ps1
@@ -207,7 +208,7 @@ def main() -> None:
     )
 
     # cmd.exe wants CRLF; these two are ASCII-only on purpose.
-    for name in ("install.bat", "restore.bat"):
+    for name in ("install.bat", "restore.bat", "diagnose.bat"):
         text = (PATCH / "templates" / name).read_text(encoding="utf-8")
         text.encode("ascii")  # fail the build if Korean sneaks in
         (BUILD / name).write_bytes(text.replace("\n", "\r\n").encode("ascii"))

@@ -42,6 +42,12 @@ function Install.Install(CookingPlanner)
 		tuning  = SafeRequire("npc_tuning"),
 	}
 
+	-- debug 를 켜면 NPC Friends 자체 요리 로그([Cooking] 줄)도 같이 켭니다.
+	-- 이 값은 실행 중에 그때그때 읽히므로 지금 바꿔도 바로 적용됩니다.
+	if Core.cfg.debug and Core.host.tuning ~= nil then
+		Core.host.tuning.DEBUG_COOKING = true
+	end
+
 	-- 요리를 못 할 때 이유를 설명해 주는 진단기
 	pcall(Diag.Attach, CookingPlanner)
 
