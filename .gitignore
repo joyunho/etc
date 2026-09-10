@@ -1,0 +1,5 @@
+# Build output. dist/NPC_HOF_Patch.zip is committed on purpose; build/ is not.
+build/
+
+# Created on the player's machine by install.bat
+_backup/

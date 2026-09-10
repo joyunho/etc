@@ -1,0 +1,345 @@
+# patch.ps1
+#
+#   NPC Friends x Heap of Foods - 요리 연동 패치
+#
+#   install.bat / restore.bat 이 이 파일을 부릅니다. 직접 실행할 필요는 없습니다.
+#
+#   하는 일은 두 가지뿐입니다.
+#     1. files\npc_hof_cooking.lua 를 NPC Friends 의 scripts\npc\ 에 복사
+#     2. scripts\npc\npc_cooking_planner.lua 의 마지막 return 바로 앞에
+#        그 파일을 부르는 한 줄을 추가
+#
+#   기존 파일은 이 한 줄 말고는 전혀 바뀌지 않고, 원본은 _backup 에 보관됩니다.
+#
+#   Windows PowerShell 5.1 (윈도우 기본 내장) 에서 동작하도록 작성했습니다.
+
+param(
+	[ValidateSet('install', 'restore')]
+	[string]$Action = 'install'
+)
+
+$ErrorActionPreference = 'Stop'
+
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  상수
+# ══════════════════════════════════════════════════════════════════════════════
+
+$MODID    = '3684000581'
+$LUA_NAME = 'npc_hof_cooking.lua'
+$PLANNER  = 'npc_cooking_planner.lua'
+
+$MARK_BEGIN = '-- [NPC_HOF_PATCH_BEGIN] NPC Friends x Heap of Foods'
+$MARK_END   = '-- [NPC_HOF_PATCH_END]'
+$HOOK_LINE  = 'pcall(function() require("npc/npc_hof_cooking").Install(CookingPlanner) end)'
+
+$PackageRoot = Split-Path -Parent $PSScriptRoot
+$SourceLua   = Join-Path (Join-Path $PackageRoot 'files') $LUA_NAME
+$BackupRoot  = Join-Path $PackageRoot '_backup'
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  출력
+# ══════════════════════════════════════════════════════════════════════════════
+
+function Write-Head($text) {
+	Write-Host ''
+	Write-Host '=========================================================='
+	Write-Host ("  " + $text)
+	Write-Host '=========================================================='
+	Write-Host ''
+}
+
+function Write-Ok   ($t) { Write-Host ("    [완료] " + $t) -ForegroundColor Green }
+function Write-Info ($t) { Write-Host ("    [확인] " + $t) -ForegroundColor Gray  }
+function Write-Warn ($t) { Write-Host ("    [주의] " + $t) -ForegroundColor Yellow }
+function Write-Fail ($t) { Write-Host ("    [실패] " + $t) -ForegroundColor Red   }
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Steam / 모드 폴더 찾기
+# ══════════════════════════════════════════════════════════════════════════════
+
+function Get-SteamLibraries {
+	$libs  = New-Object System.Collections.Generic.List[string]
+	$roots = New-Object System.Collections.Generic.List[string]
+
+	foreach ($probe in @(
+		@{ Path = 'HKCU:\Software\Valve\Steam';                Name = 'SteamPath'   },
+		@{ Path = 'HKLM:\SOFTWARE\WOW6432Node\Valve\Steam';    Name = 'InstallPath' },
+		@{ Path = 'HKLM:\SOFTWARE\Valve\Steam';                Name = 'InstallPath' }
+	)) {
+		try {
+			$value = (Get-ItemProperty -Path $probe.Path -Name $probe.Name -ErrorAction Stop).($probe.Name)
+			if ($value) { $roots.Add(($value -replace '/', '\')) }
+		} catch { }
+	}
+
+	$roots.Add('C:\Program Files (x86)\Steam')
+	$roots.Add('C:\Program Files\Steam')
+
+	foreach ($root in $roots) {
+		if ([string]::IsNullOrWhiteSpace($root)) { continue }
+
+		$root = $root.TrimEnd('\')
+		if (-not $libs.Contains($root)) { $libs.Add($root) }
+
+		$vdf = Join-Path $root 'steamapps\libraryfolders.vdf'
+		if (Test-Path -LiteralPath $vdf) {
+			try {
+				$text = Get-Content -Raw -LiteralPath $vdf
+				foreach ($m in [regex]::Matches($text, '"path"\s*"([^"]+)"')) {
+					$lib = ($m.Groups[1].Value -replace '\\\\', '\').TrimEnd('\')
+					if ($lib -and -not $libs.Contains($lib)) { $libs.Add($lib) }
+				}
+			} catch { }
+		}
+	}
+
+	return $libs
+}
+
+function Test-ModFolder($path) {
+	if ([string]::IsNullOrWhiteSpace($path)) { return $false }
+	return (Test-Path -LiteralPath (Join-Path (Join-Path (Join-Path $path 'scripts') 'npc') $PLANNER))
+}
+
+function Get-ModFolders {
+	$found = New-Object System.Collections.Generic.List[string]
+
+	$relative = @(
+		('steamapps\workshop\content\322330\' + $MODID),
+		("steamapps\common\Don't Starve Together\mods\workshop-" + $MODID),
+		("steamapps\common\Don't Starve Together Dedicated Server\mods\workshop-" + $MODID)
+	)
+
+	foreach ($lib in (Get-SteamLibraries)) {
+		foreach ($rel in $relative) {
+			$candidate = Join-Path $lib $rel
+			if ((Test-ModFolder $candidate) -and -not $found.Contains($candidate)) {
+				$found.Add($candidate)
+			}
+		}
+
+		# 이름을 바꿔 넣은 로컬 설치본까지 훑어봅니다.
+		foreach ($modsDir in @(
+			(Join-Path $lib "steamapps\common\Don't Starve Together\mods"),
+			(Join-Path $lib "steamapps\common\Don't Starve Together Dedicated Server\mods")
+		)) {
+			if (-not (Test-Path -LiteralPath $modsDir)) { continue }
+			try {
+				foreach ($sub in (Get-ChildItem -LiteralPath $modsDir -Directory -ErrorAction Stop)) {
+					if ((Test-ModFolder $sub.FullName) -and -not $found.Contains($sub.FullName)) {
+						$found.Add($sub.FullName)
+					}
+				}
+			} catch { }
+		}
+	}
+
+	return $found
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  파일 읽기 / 쓰기 (원본 인코딩과 줄바꿈을 그대로 보존)
+# ══════════════════════════════════════════════════════════════════════════════
+
+function Read-LuaFile($path) {
+	$bytes  = [System.IO.File]::ReadAllBytes($path)
+	$hasBom = ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
+	$offset = if ($hasBom) { 3 } else { 0 }
+
+	$encoding = New-Object System.Text.UTF8Encoding($hasBom)
+	$text     = $encoding.GetString($bytes, $offset, $bytes.Length - $offset)
+
+	return [pscustomobject]@{
+		Text     = $text
+		Encoding = $encoding
+		HasBom   = $hasBom
+		NewLine  = $(if ($text -match "`r`n") { "`r`n" } else { "`n" })
+	}
+}
+
+function Write-LuaFile($path, $file, $text) {
+	$out = New-Object System.Collections.Generic.List[byte]
+	if ($file.HasBom) { $out.AddRange($file.Encoding.GetPreamble()) }
+	$out.AddRange($file.Encoding.GetBytes($text))
+	[System.IO.File]::WriteAllBytes($path, $out.ToArray())
+}
+
+function Get-BackupPath($modFolder) {
+	$key = ($modFolder -replace '[^A-Za-z0-9]', '_')
+	if ($key.Length -gt 80) { $key = $key.Substring($key.Length - 80) }
+	return (Join-Path $BackupRoot ($key + '__' + $PLANNER + '.bak'))
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  설치
+# ══════════════════════════════════════════════════════════════════════════════
+
+function Install-One($modFolder) {
+	Write-Host ('  대상: ' + $modFolder)
+
+	$npcDir      = Join-Path (Join-Path $modFolder 'scripts') 'npc'
+	$plannerPath = Join-Path $npcDir $PLANNER
+	$targetLua   = Join-Path $npcDir $LUA_NAME
+
+	# 1) 원본 백업 (최초 1회만, 이미 패치된 파일은 백업하지 않습니다)
+	$backupPath = Get-BackupPath $modFolder
+	if (-not (Test-Path -LiteralPath $backupPath)) {
+		$current = Read-LuaFile $plannerPath
+		if ($current.Text.Contains($MARK_BEGIN)) {
+			Write-Info '이미 패치된 파일이라 백업을 새로 만들지 않습니다'
+		} else {
+			if (-not (Test-Path -LiteralPath $BackupRoot)) {
+				New-Item -ItemType Directory -Path $BackupRoot -Force | Out-Null
+			}
+			Copy-Item -LiteralPath $plannerPath -Destination $backupPath -Force
+			Write-Ok ('원본 백업 -> _backup\' + (Split-Path -Leaf $backupPath))
+		}
+	} else {
+		Write-Info '백업이 이미 있습니다'
+	}
+
+	# 2) 새 파일 복사
+	Copy-Item -LiteralPath $SourceLua -Destination $targetLua -Force
+	Write-Ok ('scripts\npc\' + $LUA_NAME + ' 복사')
+
+	# 3) planner 에 연결 한 줄 추가
+	$file = Read-LuaFile $plannerPath
+
+	if ($file.Text.Contains($MARK_BEGIN)) {
+		Write-Info '연결 코드가 이미 들어 있습니다'
+		return $true
+	}
+
+	$hits = [regex]::Matches($file.Text, '(?m)^[ \t]*return[ \t]+CookingPlanner[ \t]*\r?$')
+	if ($hits.Count -eq 0) {
+		Write-Fail ($PLANNER + ' 의 형식이 예상과 다릅니다 (return CookingPlanner 를 찾지 못함)')
+		Write-Fail 'NPC Friends 가 업데이트된 것 같습니다. 알려 주시면 맞춰 드릴게요.'
+		return $false
+	}
+
+	$last = $hits[$hits.Count - 1]
+	$nl   = $file.NewLine
+
+	# 삽입하는 줄바꿈 수와 restore 의 정규식이 정확히 대칭이어야
+	# 백업 없이 되돌려도 원본과 바이트 단위로 같아집니다.
+	$block = $nl + $MARK_BEGIN + $nl + $HOOK_LINE + $nl + $MARK_END + $nl
+	$text  = $file.Text.Substring(0, $last.Index) + $block + $file.Text.Substring($last.Index)
+
+	Write-LuaFile $plannerPath $file $text
+	Write-Ok ($PLANNER + ' 에 한 줄 추가')
+
+	return $true
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  되돌리기
+# ══════════════════════════════════════════════════════════════════════════════
+
+function Restore-One($modFolder) {
+	Write-Host ('  대상: ' + $modFolder)
+
+	$npcDir      = Join-Path (Join-Path $modFolder 'scripts') 'npc'
+	$plannerPath = Join-Path $npcDir $PLANNER
+	$targetLua   = Join-Path $npcDir $LUA_NAME
+
+	# 1) 추가했던 파일 삭제
+	if (Test-Path -LiteralPath $targetLua) {
+		Remove-Item -LiteralPath $targetLua -Force
+		Write-Ok ($LUA_NAME + ' 삭제')
+	} else {
+		Write-Info ($LUA_NAME + ' 이 이미 없습니다')
+	}
+
+	# 2) planner 원복 - 백업이 있으면 백업으로, 없으면 추가한 줄만 지웁니다
+	$backupPath = Get-BackupPath $modFolder
+
+	if (Test-Path -LiteralPath $backupPath) {
+		Copy-Item -LiteralPath $backupPath -Destination $plannerPath -Force
+		Write-Ok ($PLANNER + ' 을 백업본으로 되돌림')
+		return $true
+	}
+
+	$file = Read-LuaFile $plannerPath
+	if (-not $file.Text.Contains($MARK_BEGIN)) {
+		Write-Info ($PLANNER + ' 은 이미 원래 상태입니다')
+		return $true
+	}
+
+	$pattern = '(?s)\r?\n?' + [regex]::Escape($MARK_BEGIN) + '.*?' + [regex]::Escape($MARK_END) + '\r?\n?'
+	$text    = [regex]::Replace($file.Text, $pattern, '')
+
+	Write-LuaFile $plannerPath $file $text
+	Write-Ok ($PLANNER + ' 에서 추가한 줄 제거')
+
+	return $true
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  진입점
+# ══════════════════════════════════════════════════════════════════════════════
+
+if ($env:NPCHOF_DOTSOURCE_ONLY -eq '1') { return }
+
+if ($Action -eq 'install') {
+	Write-Head 'NPC Friends x Heap of Foods - 요리 연동 패치 설치'
+} else {
+	Write-Head 'NPC Friends x Heap of Foods - 원래대로 되돌리기'
+}
+
+if ($Action -eq 'install' -and -not (Test-Path -LiteralPath $SourceLua)) {
+	Write-Fail ($LUA_NAME + ' 을 찾지 못했습니다.')
+	Write-Fail 'zip 압축을 완전히 푼 뒤, 풀린 폴더 안의 install.bat 을 실행해 주세요.'
+	Write-Host ''
+	exit 1
+}
+
+Write-Host 'NPC Friends 모드 폴더를 찾는 중...'
+Write-Host ''
+
+$folders = Get-ModFolders
+
+if ($folders.Count -eq 0) {
+	Write-Fail 'NPC Friends 모드 폴더를 찾지 못했습니다.'
+	Write-Host ''
+	Write-Host '  확인해 주세요:'
+	Write-Host '    1) 창작마당에서 NPC Friends (3684000581) 를 구독했는지'
+	Write-Host '    2) 구독 후 DST 를 한 번 실행해서 실제로 내려받아졌는지'
+	Write-Host '    3) Steam 이 기본 위치가 아닌 다른 드라이브에 설치되어 있다면,'
+	Write-Host '       그 폴더의 steamapps\workshop\content\322330\3684000581 이'
+	Write-Host '       존재하는지'
+	Write-Host ''
+	exit 1
+}
+
+$done = 0
+foreach ($folder in $folders) {
+	try {
+		$ok = if ($Action -eq 'install') { Install-One $folder } else { Restore-One $folder }
+		if ($ok) { $done = $done + 1 }
+	} catch {
+		Write-Fail $_.Exception.Message
+		Write-Fail 'DST 를 완전히 종료한 뒤, install.bat 을 마우스 오른쪽 클릭 -> 관리자 권한으로 실행해 보세요.'
+	}
+	Write-Host ''
+}
+
+if ($Action -eq 'install') {
+	Write-Head ('설치 완료 - ' + $done + ' / ' + $folders.Count + ' 곳')
+	Write-Host '  다음 순서로 확인하세요:'
+	Write-Host '    1. DST 를 완전히 종료했다가 다시 실행'
+	Write-Host '    2. Heap of Foods 와 NPC Friends 를 둘 다 켠 채로 월드 접속'
+	Write-Host '    3. 왈리 NPC 에게 냄비와 아이스박스를 지정하고 요리 시키기'
+	Write-Host ''
+	Write-Warn 'Steam 이 NPC Friends 를 업데이트하면 이 패치가 지워집니다.'
+	Write-Warn '그때는 install.bat 을 다시 실행하면 됩니다.'
+	Write-Host ''
+	Write-Host '  되돌리려면 restore.bat 을 실행하세요.'
+} else {
+	Write-Head ('되돌리기 완료 - ' + $done + ' / ' + $folders.Count + ' 곳')
+	Write-Host '  DST 를 완전히 종료했다가 다시 실행하세요.'
+}
+
+Write-Host ''
+exit 0
