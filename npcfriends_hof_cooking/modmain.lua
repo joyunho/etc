@@ -41,6 +41,7 @@ Core.Configure(
 	budget         = Cfg("budget", "medium"),
 	same_dish_max  = tonumber(Cfg("same_dish_max", 0)) or 0,
 	allow_negative = Cfg("allow_negative", false) == true,
+	explain        = Cfg("explain", true) ~= false,
 	debug          = Cfg("debug", false) == true,
 })
 

@@ -42,6 +42,9 @@ function Install.Install(CookingPlanner)
 		tuning  = SafeRequire("npc_tuning"),
 	}
 
+	-- 요리를 못 할 때 이유를 설명해 주는 진단기
+	pcall(Diag.Attach, CookingPlanner)
+
 	local original = CookingPlanner.FindBestRecipe
 
 	CookingPlanner.FindBestRecipe = function(pool, existing_dishes, is_warly, cooker_name)

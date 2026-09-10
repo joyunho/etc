@@ -35,12 +35,50 @@ end
 local ORIGINAL_SENTINEL = { name = "__original_was_called__" }
 local original_calls = 0
 
+-- The diagnostic reads GetTime() for its rate limit.
+local fake_now = 0
+function GetTime() return fake_now end
+
+local plan_calls = 0
+
 local function NewPlanner()
 	return {
 		FindBestRecipe = function(pool, existing, is_warly, cooker_name)
 			original_calls = original_calls + 1
 			return ORIGINAL_SENTINEL
 		end,
+		-- Stands in for NPC Friends' PlanCooking, which gives up silently.
+		PlanCooking = function(inst, containers, cookpots, is_warly)
+			plan_calls = plan_calls + 1
+			return nil
+		end,
+	}
+end
+
+local function NewChef()
+	local said = {}
+	return {
+		GUID = 1234,
+		components = {
+			talker    = { Say = function(self, text) said[#said + 1] = text end },
+			inventory = { maxslots = 12, GetItemInSlot = function() return nil end },
+		},
+		said = said,
+	}
+end
+
+local function NewContainer(items)
+	local slots = {}
+	for i, prefab in ipairs(items) do slots[i] = { prefab = prefab, IsValid = function() return true end } end
+	return {
+		prefab  = "treasurechest",
+		IsValid = function() return true end,
+		components = {
+			container = {
+				GetNumSlots   = function() return 9 end,
+				GetItemInSlot = function(self, i) return slots[i] end,
+			},
+		},
 	}
 end
 
@@ -132,6 +170,42 @@ for i = 1, 10 do
 	if card ~= nil and card ~= ORIGINAL_SENTINEL and stocked[card.name] then violated = true end
 end
 check("never cooks a dish already stocked past the cap", not violated)
+
+print("\n=========== 6. it explains why the chef gave up ===========")
+
+local chef = NewChef()
+
+-- Chests full of things the game does not consider cooking ingredients.
+fake_now = 1000
+Planner.PlanCooking(chef, { NewContainer({ "log", "rocks", "flint" }) }, {}, true)
+check("PlanCooking is wrapped and still returns nil", plan_calls == 1)
+check("the chef says something about the missing pot or ingredients", #chef.said == 1,
+	table.concat(chef.said, " | "))
+
+-- Same failure a second later: it must not spam.
+Planner.PlanCooking(chef, { NewContainer({ "log" }) }, {}, true)
+check("it does not repeat itself straight away", #chef.said == 1, tostring(#chef.said))
+
+-- A minute later it may speak again.
+fake_now = 1100
+Planner.PlanCooking(chef, { NewContainer({ "log" }) }, {}, true)
+check("it speaks again after the interval", #chef.said == 2, tostring(#chef.said))
+
+-- With a working pot but no usable ingredients, it must name that case.
+local pot = {
+	IsValid = function() return true end,
+	components = { stewer = { IsCooking = function() return false end, IsDone = function() return false end } },
+}
+chef = NewChef()
+fake_now = 2000
+Planner.PlanCooking(chef, { NewContainer({ "log", "rocks" }) }, { pot }, true)
+check("it reports 'no usable ingredients' when the pot is fine",
+	#chef.said == 1 and chef.said[1]:find("재료") ~= nil, table.concat(chef.said, " | "))
+print("  chef said: " .. table.concat(chef.said, " | "))
+
+-- A malformed container must not crash the NPC.
+local ok_diag = pcall(Planner.PlanCooking, chef, { { prefab = "broken" } }, { pot }, true)
+check("a malformed container does not raise", ok_diag)
 
 print("")
 if failures == 0 then

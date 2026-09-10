@@ -36,6 +36,7 @@ MERGE_ORDER = [
     (SCRIPTS / "hofnpc_core.lua", "Core"),
     (SCRIPTS / "hofnpc_variety.lua", "Variety"),
     (SCRIPTS / "hofnpc_search.lua", "Search"),
+    (SCRIPTS / "hofnpc_diag.lua", "Diag"),
 ]
 
 # `local Core = require("hofnpc_core")` and friends: inside the merged file the
@@ -144,7 +145,28 @@ NPC Friends 의 왈리 NPC 가 Heap of Foods 를 비롯한 음식 모드의 요�
     budget         탐색량        "low" / "medium" / "high"
     same_dish_max  같은 요리를 창고에 몇 개까지 쌓을지 (0 = 모드 설정 따름)
     allow_negative 체력/정신력이 깎이는 요리도 만들지
-    debug          서버 로그에 고른 이유를 출력 (문제 확인용)
+    explain        요리를 못 할 때 왈리가 그 이유를 직접 말함 (기본 켜짐)
+    debug          고른 이유까지 전부 서버 로그에 출력
+
+
+[ 왈리가 "재료가 없어요" 라고 할 때 ]
+
+  왈리는 창고 전체를 보지 않습니다. '여기서 요리' 로 지정한 지점 기준
+  반경 약 17칸 안에 있는, 아이스박스/상자류만 봅니다.
+
+  이 패치를 깔면 왈리가 왜 못 하는지 직접 말해 줍니다. 예를 들어
+
+    "상자 3개를 봤는데 요리 재료가 없어요. 제 상자에 넣어 주세요."
+    "요리 지점 근처에 냄비가 없어요."
+    "가방이 꽉 차서 재료를 못 들어요."
+    "재료는 12종 있는데 만들 수 있는 요리가 없어요."
+
+  가장 흔한 원인은 첫 번째입니다. 왈리는 자기가 지은 아이스박스 1개와
+  나무상자 2개를 씁니다. 재료를 그 3개 안에 넣어 주시거나,
+  재료 상자 옆에서 '여기서 요리' 를 다시 지정해 주세요.
+
+  마지막 줄이 나오면 '같은 요리 최대 개수' 를 올려 보세요.
+  이미 만들 수 있는 요리를 전부 상한까지 쌓아 둔 상태일 수 있습니다.
 
 
 [ 알아두실 점 ]

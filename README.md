@@ -148,7 +148,8 @@ pcall(function() require("npc/npc_hof_cooking").Install(CookingPlanner) end)
 | `budget` | `"medium"` | 탐색량. `low` / `medium` / `high` |
 | `same_dish_max` | `0` | 같은 요리 최대 보관량. `0` = 모드 설정을 따름 |
 | `allow_negative` | `false` | 체력·정신력이 깎이는 요리도 만들지 |
-| `debug` | `false` | 고른 이유를 서버 로그에 출력 |
+| `explain` | `true` | 요리를 못 할 때 왈리가 그 이유를 직접 말함 |
+| `debug` | `false` | 고른 이유까지 서버 로그에 출력 |
 | `protect` | `{}` | 절대 재료로 쓰지 않을 아이템 |
 
 ### 알아두실 점
@@ -156,6 +157,50 @@ pcall(function() require("npc/npc_hof_cooking").Install(CookingPlanner) end)
 - **Steam이 NPC Friends를 업데이트하면 패치가 지워집니다.** `install.bat` 을 다시 실행하세요.
 - **멀티에서는 서버(호스트) 쪽에 설치되어야 합니다.** NPC의 요리 판단은 전부 서버에서 일어납니다.
 - 문제가 생기면 `debug = true` 로 바꾸고 서버 로그의 `[NPCF-HOF]` 줄을 보세요.
+
+---
+
+## 왈리가 "재료가 없어요" 라고 할 때
+
+**왈리는 창고 전체를 보지 않습니다.** NPC Friends의 실제 탐색 코드는 이렇습니다.
+
+```lua
+get_containers_fn = function(inst)
+    local center = inst._cooking_center          -- '여기서 요리' 로 지정한 지점
+    if not center then return {} end
+    local radius = inst._shadow_chef_radius or NPC_TUNING.FARM_WORK_RADIUS or 17
+    TheSim:FindEntities(center.x, 0, center.z, radius, {"fridge"})     -- 냉장고류
+    TheSim:FindEntities(center.x, 0, center.z, radius, {"structure"})  -- 구조물류
+    -- backpack 태그가 붙은 것은 제외
+```
+
+즉 **요리 지점 기준 반경 약 17칸 안의, `fridge` 또는 `structure` 태그가 붙은 컨테이너만**
+봅니다. 등에 메는 가방류는 제외됩니다. 그리고 왈리는 자기 전용으로
+아이스박스 1개 + 나무상자 2개를 짓습니다 (`warly.lua` 의 `PREFAB_MAP`) — 그래서
+"상자 3개를 봤는데" 라는 말이 나오면 **님 창고가 아니라 왈리 자기 상자 3개만 보고 있는 것**입니다.
+
+이 패치는 왈리가 요리를 포기할 때 그 이유를 직접 말하게 합니다.
+
+| 왈리가 하는 말 | 뜻 | 할 일 |
+|---|---|---|
+| 상자 N개를 봤는데 요리 재료가 없어요 | 상자는 찾았지만 안에 요리 재료가 없음 | 왈리 아이스박스/상자에 재료를 넣거나, 재료 상자 옆에서 '여기서 요리' 재지정 |
+| 요리 지점 근처에 상자가 없어요 | 반경 안에 컨테이너 자체가 없음 | 요리 지점 근처에 상자를 놓기 |
+| 요리 지점 근처에 냄비가 없어요 | 냄비를 못 찾음 | '여기서 요리' 재지정 |
+| 가방이 꽉 차서 재료를 못 들어요 | 왈리 인벤토리 빈칸 4칸 미만 | 왈리 가방 비우기 |
+| 재료는 N종 있는데 만들 수 있는 요리가 없어요 | 재료는 있으나 후보가 전부 걸러짐 | '같은 요리 최대 개수'를 올리기 |
+
+서버 로그(`[NPCF-HOF]` 줄)에는 더 자세히 나옵니다 — 본 컨테이너 목록, 각 상자의 재료 개수,
+그리고 재료가 아닌 것으로 판정된 아이템 이름까지.
+
+### 이전 패치가 깔려 있다면
+
+게임 안 왈리 창에 **"만들 수 있는 요리" / "다양한 음식 만들기"** 버튼이 보인다면, 그건
+NPC Friends 원본에 없는 버튼입니다 — 다른 패치가 이미 설치되어 있다는 뜻입니다.
+그 패치는 `npc_cooking_recipes.lua` 등 8개 파일을 통째로 교체합니다.
+
+같이 써도 이 패치가 요리 선택을 덮어쓰므로 치명적이진 않지만, 깨끗하게 하시려면
+**이전 패치의 `restore.bat` 을 먼저 실행해 원본으로 되돌린 뒤** 이 패치의 `install.bat` 을
+실행하시는 편이 좋습니다.
 
 ---
 
@@ -169,6 +214,7 @@ npcfriends_hof_cooking/             ← 로직의 원본. 그 자체로 독립 �
   scripts/hofnpc_core.lua             설정 · 요리 점수 · 요리 필터
   scripts/hofnpc_variety.lua          최근에 만든 요리 기억 + 감점
   scripts/hofnpc_search.lua           핵심: 조합 탐색
+  scripts/hofnpc_diag.lua             요리를 못 할 때 이유 설명
   scripts/hofnpc_patch.lua            독립 모드용 런타임 후킹
   modmain.lua  modinfo.lua            독립 모드 껍데기
 

@@ -155,6 +155,19 @@ configuration_options =
 	},
 
 	{
+		name    = "explain",
+		label   = _ko and "못 하는 이유 말하기" or "Explain failures",
+		hover   = _ko and "왈리가 요리를 못 할 때 그 이유를 직접 말해 줍니다."
+		              or  "The chef says out loud why it could not cook.",
+		options =
+		{
+			opt(_ko and "켜기" or "On",  true),
+			opt(_ko and "끄기" or "Off", false),
+		},
+		default = true,
+	},
+
+	{
 		name    = "debug",
 		label   = _ko and "디버그 로그" or "Debug log",
 		hover   = _ko and "서버 로그에 어떤 요리를 왜 골랐는지 출력합니다."

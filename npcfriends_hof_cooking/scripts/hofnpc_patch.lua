@@ -17,6 +17,7 @@
 local Core    = require("hofnpc_core")
 local Search  = require("hofnpc_search")
 local Variety = require("hofnpc_variety")
+local Diag    = require("hofnpc_diag")
 
 local Patch = {}
 
@@ -75,6 +76,8 @@ function Patch.TryApply()
 		recipes = GetLoadedModule(MODULE_RECIPES),
 		tuning  = GetLoadedModule(MODULE_TUNING),
 	})
+
+	pcall(Diag.Attach, planner)
 
 	Patch._orig = planner.FindBestRecipe
 

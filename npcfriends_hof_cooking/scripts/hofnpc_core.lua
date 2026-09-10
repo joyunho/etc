@@ -22,6 +22,7 @@ Core.cfg =
 	budget         = "medium",  -- low | medium | high
 	same_dish_max  = nil,       -- nil -> follow NPC Friends' COOK_SAME_DISH_MAX
 	allow_negative = false,     -- allow dishes with negative health/sanity
+	explain        = true,      -- say in the log why the chef gave up
 	debug          = false,
 	protect        = {},        -- [prefab] = true, never spent as an ingredient
 }
