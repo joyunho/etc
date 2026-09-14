@@ -191,7 +191,56 @@ Check 'stop clears the saved search' (-not (Test-Path -LiteralPath $p.State))
 Check 'stop clears the backup folder' (-not (Test-Path -LiteralPath $p.Backup))
 
 Write-Host ''
-Write-Host '=== 7. it refuses to guess without a fresh log ==='
+Write-Host '=== 7. only real log files are read, and each one only once ==='
+
+# What a Klei folder actually holds next to a log.
+$master = Join-Path $cluster 'Master'
+foreach ($junk in @('server.ini', 'modconfiguration_workshop-3383047161', 'adjectives.txt')) {
+	[IO.File]::WriteAllText((Join-Path $master $junk), 'not a log')
+}
+[IO.File]::WriteAllText((Join-Path $master 'server_log.txt'), 'DoLuaFile Error')
+[IO.File]::WriteAllText((Join-Path $master 'server_log_2026-09-15-00-19-33.txt'), 'DoLuaFile Error')
+[IO.File]::WriteAllText((Join-Path $cluster 'caves_server_log.txt'), 'DoLuaFile Error')
+[IO.File]::WriteAllText((Join-Path $cluster 'client_log.txt'), 'Sim paused')
+
+$found    = @(Get-DstLogs)
+$logNames = @($found | ForEach-Object { Split-Path -Leaf $_ } | Sort-Object)
+
+Check 'server.ini is not treated as a log' ($logNames -notcontains 'server.ini')
+Check 'a mod config file is not treated as a log' `
+	((@($logNames | Where-Object { $_ -like 'modconfiguration*' })).Count -eq 0)
+Check 'a plain .txt with no "log" in the name is left alone' ($logNames -notcontains 'adjectives.txt')
+Check 'server_log.txt is found'       ($logNames -contains 'server_log.txt')
+Check 'a rotated backup is found'     ($logNames -contains 'server_log_2026-09-15-00-19-33.txt')
+Check 'caves_server_log.txt is found' ($logNames -contains 'caves_server_log.txt')
+Check 'client_log.txt is found'       ($logNames -contains 'client_log.txt')
+
+# Documents and OneDrive\Documents can mirror the same folder, so the same log
+# arrives twice under two different paths. It must still be read once.
+$mirror = Join-Path $sandbox 'OneDrive/Documents/Klei/DoNotStarveTogether/Cluster_1/Master'
+New-Item -ItemType Directory -Force -Path $mirror | Out-Null
+Copy-Item -LiteralPath (Join-Path $master 'server_log.txt') -Destination $mirror -Force
+(Get-Item -LiteralPath (Join-Path $mirror 'server_log.txt')).LastWriteTimeUtc =
+	(Get-Item -LiteralPath (Join-Path $master 'server_log.txt')).LastWriteTimeUtc
+
+$both = @(Get-ChildItem -LiteralPath @((Join-Path $master 'server_log.txt'), (Join-Path $mirror 'server_log.txt')))
+Check 'the same log under two paths is read once' `
+	((@(Select-DistinctLogs $both)).Count -eq 1) ("got " + (@(Select-DistinctLogs $both)).Count)
+
+$different = @(Get-ChildItem -LiteralPath @((Join-Path $master 'server_log.txt'), (Join-Path $cluster 'caves_server_log.txt')))
+Check 'two genuinely different logs both survive' `
+	((@(Select-DistinctLogs $different)).Count -eq 2)
+
+foreach ($junk in @('server.ini', 'modconfiguration_workshop-3383047161', 'adjectives.txt',
+                    'server_log_2026-09-15-00-19-33.txt')) {
+	Remove-Item -LiteralPath (Join-Path $master $junk) -Force -ErrorAction SilentlyContinue
+}
+Remove-Item -LiteralPath (Join-Path $cluster 'caves_server_log.txt') -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath (Join-Path $cluster 'client_log.txt') -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath (Join-Path $sandbox 'OneDrive') -Recurse -Force -ErrorAction SilentlyContinue
+
+Write-Host ''
+Write-Host '=== 8. it refuses to guess without a fresh log ==='
 
 Reset-World $ids
 $script:reportLines = New-Object System.Collections.Generic.List[string]

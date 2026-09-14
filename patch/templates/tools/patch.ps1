@@ -365,18 +365,47 @@ function Get-KleiRoots {
 	return $roots
 }
 
+# 로그 파일 이름인지 판정합니다.
+#   server_log.txt / client_log.txt / caves_server_log.txt
+#   server_log_2026-09-15-00-19-33.txt (백업본)
+function Test-LogName($name) {
+	return ($name -match '(?i)^[a-z0-9_\-]*log[a-z0-9_\-]*\.txt$')
+}
+
+# 주의: Get-ChildItem -LiteralPath ... -Include 를 쓰면 안 됩니다.
+# Windows PowerShell 5.1 에서는 -Include 가 통째로 무시되어 Klei 폴더의
+# 모든 파일(server.ini, modconfiguration_* 까지)이 로그로 딸려 옵니다.
+# 이름은 직접 걸러야 합니다.
 function Get-DstLogs {
 	$logs = New-Object System.Collections.Generic.List[string]
 
 	foreach ($root in (Get-KleiRoots)) {
 		try {
-			foreach ($f in (Get-ChildItem -LiteralPath $root -Recurse -Include 'client_log.txt', 'server_log.txt' -ErrorAction SilentlyContinue)) {
+			foreach ($f in (Get-ChildItem -LiteralPath $root -Recurse -File -ErrorAction SilentlyContinue)) {
+				if (-not (Test-LogName $f.Name)) { continue }
 				if (-not $logs.Contains($f.FullName)) { $logs.Add($f.FullName) }
 			}
 		} catch { }
 	}
 
 	return $logs
+}
+
+# 같은 로그가 여러 번 잡히는 일이 있습니다. 문서 폴더와 OneDrive\문서 폴더가
+# 같은 파일을 비추고 있으면 경로가 달라서 걸러지지 않습니다.
+# 이름과 크기와 수정 시각이 모두 같으면 같은 파일로 봅니다.
+function Select-DistinctLogs($items) {
+	$seen = @{}
+	$out  = New-Object System.Collections.Generic.List[object]
+
+	foreach ($f in $items) {
+		$key = ($f.Name + '|' + $f.Length + '|' + $f.LastWriteTimeUtc.Ticks)
+		if ($seen.ContainsKey($key)) { continue }
+		$seen[$key] = $true
+		$out.Add($f)
+	}
+
+	return $out
 }
 
 function Build-Report {
@@ -996,7 +1025,7 @@ function Invoke-LastError {
 	foreach ($root in (Get-KleiRoots)) {
 		try {
 			foreach ($f in (Get-ChildItem -LiteralPath $root -Recurse -File -ErrorAction SilentlyContinue |
-					Where-Object { $_.Name -like '*log*.txt' })) {
+					Where-Object { Test-LogName $_.Name })) {
 				if ($logs -notcontains $f.FullName) { $logs += $f.FullName }
 			}
 		} catch { }
@@ -1012,8 +1041,8 @@ function Invoke-LastError {
 	# 최근에 쓰인 것부터
 	$ordered = @()
 	try {
-		$ordered = @(Get-ChildItem -LiteralPath $logs -ErrorAction SilentlyContinue |
-			Sort-Object LastWriteTime -Descending | Select-Object -First 8)
+		$ordered = @(Select-DistinctLogs (Get-ChildItem -LiteralPath $logs -ErrorAction SilentlyContinue |
+			Sort-Object LastWriteTime -Descending) | Select-Object -First 8)
 	} catch {
 		$ordered = @()
 	}
@@ -1225,7 +1254,7 @@ function Get-ModBlameFromLogs {
 	foreach ($root in (Get-KleiRoots)) {
 		try {
 			foreach ($f in (Get-ChildItem -LiteralPath $root -Recurse -File -ErrorAction SilentlyContinue |
-					Where-Object { $_.Name -like '*log*.txt' })) {
+					Where-Object { Test-LogName $_.Name })) {
 				if ($paths -notcontains $f.FullName) { $paths += $f.FullName }
 			}
 		} catch { }
@@ -1234,8 +1263,8 @@ function Get-ModBlameFromLogs {
 	$logs = @()
 	if ($paths.Count -gt 0) {
 		try {
-			$logs = @(Get-ChildItem -LiteralPath $paths -ErrorAction SilentlyContinue |
-				Sort-Object LastWriteTime -Descending | Select-Object -First 6)
+			$logs = @(Select-DistinctLogs (Get-ChildItem -LiteralPath $paths -ErrorAction SilentlyContinue |
+				Sort-Object LastWriteTime -Descending) | Select-Object -First 6)
 		} catch { $logs = @() }
 	}
 
@@ -1764,7 +1793,7 @@ function Read-BootResult($since) {
 	foreach ($root in (Get-KleiRoots)) {
 		try {
 			foreach ($f in (Get-ChildItem -LiteralPath $root -Recurse -File -ErrorAction SilentlyContinue |
-					Where-Object { $_.Name -like '*log*.txt' })) {
+					Where-Object { Test-LogName $_.Name })) {
 				if ($paths -notcontains $f.FullName) { $paths += $f.FullName }
 			}
 		} catch { }
@@ -1773,9 +1802,9 @@ function Read-BootResult($since) {
 
 	$fresh = @()
 	try {
-		$fresh = @(Get-ChildItem -LiteralPath $paths -ErrorAction SilentlyContinue |
+		$fresh = @(Select-DistinctLogs (Get-ChildItem -LiteralPath $paths -ErrorAction SilentlyContinue |
 			Where-Object { $_.LastWriteTime -gt $since } |
-			Sort-Object LastWriteTime -Descending | Select-Object -First 4)
+			Sort-Object LastWriteTime -Descending) | Select-Object -First 4)
 	} catch { return $null }
 
 	if ($fresh.Count -eq 0) { return $null }
