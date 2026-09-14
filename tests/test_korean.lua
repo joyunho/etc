@@ -31,10 +31,17 @@ local function NewEnv()
 	}
 end
 
+local post_inits = {}
+
 local function LoadPatch(GLOBAL)
-	local chunk, err = loadfile("korean_patch/scripts/korean_strings.lua")
+	post_inits = {}
+	local chunk, err = loadfile("korean_patch/modmain.lua")
 	if chunk == nil then return nil, err end
-	setfenv(chunk, setmetatable({ GLOBAL = GLOBAL }, { __index = _G }))
+	local env = setmetatable({
+		GLOBAL = GLOBAL,
+		AddSimPostInit = function(fn) table.insert(post_inits, fn) end,
+	}, { __index = _G })
+	setfenv(chunk, env)
 	local ok, e = pcall(chunk)
 	return ok, e
 end
@@ -66,16 +73,17 @@ check("and its tables are not invented",
 
 print("\n=========== 3. the re-apply hook works and is idempotent ===========")
 
-check("it exposes the re-apply function", type(G.KOREAN_PATCH_APPLY) == "function")
+check("it registered a post-init re-apply", #post_inits == 1, tostring(#post_inits))
+check("it did not plant a global on GLOBAL", G.KOREAN_PATCH_APPLY == nil)
 
 -- A mod overwrites our string after we ran, the way a late-loading mod would.
 G.STRINGS.NAMES.LARGECHEST = "Large Chest"
-G.KOREAN_PATCH_APPLY()
+post_inits[1]()
 check("running it again puts Korean back",
 	G.STRINGS.NAMES.LARGECHEST == "대형 상자", tostring(G.STRINGS.NAMES.LARGECHEST))
 
 local before = G.STRINGS.CHARACTERS.WENDY.DESCRIBE.COFFEEBUSH
-G.KOREAN_PATCH_APPLY()
+post_inits[1]()
 check("a third run changes nothing",
 	G.STRINGS.CHARACTERS.WENDY.DESCRIBE.COFFEEBUSH == before)
 
@@ -158,6 +166,31 @@ scan(G4.STRINGS, "")
 
 check("no Chinese was left behind", cjk == 0, tostring(cjk))
 check("no English sentence was left behind", latin == 0, tostring(latin))
+
+print("\n=========== 8. it can never stop the game ===========")
+
+-- KnownModIndex missing entirely, the way it would be if Klei moved it.
+local G5 = NewEnv()
+G5.KnownModIndex = nil
+local ok5 = LoadPatch(G5)
+check("it loads even with no mod index at all", ok5)
+check("and simply sets nothing", G5.STRINGS.NAMES.LARGECHEST == nil)
+
+-- A mod index that throws on every call.
+local G6 = NewEnv()
+G6.KnownModIndex = {
+	IsModEnabled      = function() error("boom") end,
+	IsModForceEnabled = function() error("boom") end,
+}
+local ok6 = LoadPatch(G6)
+check("it loads even when the mod index throws", ok6)
+
+-- STRINGS itself replaced by something hostile.
+local G7 = NewEnv()
+enabled_mods["workshop-2087177552"] = true
+G7.STRINGS = setmetatable({}, { __newindex = function() error("read only") end })
+local ok7 = LoadPatch(G7)
+check("it loads even when STRINGS refuses writes", ok7)
 
 print("")
 if failures == 0 then

@@ -2908,14 +2908,13 @@ $KO_MARK_END    = '-- [KOREAN_PATCH_END]'
 function Get-DstModFolders {
 	$found = New-Object System.Collections.Generic.List[string]
 
+	# 게임 폴더에만 넣습니다. 이 패치는 client_only_mod 라서 서버 쪽에
+	# 넣어 봐야 하는 일이 없고, 괜히 서버가 읽을 파일만 하나 늘어납니다.
 	foreach ($lib in (Get-SteamLibraries)) {
-		foreach ($rel in @("steamapps\common\Don't Starve Together\mods",
-		                   "steamapps\common\Don't Starve Together Dedicated Server\mods")) {
-			try {
-				$path = Join-Path $lib $rel
-				if ((Test-Path -LiteralPath $path) -and -not $found.Contains($path)) { $found.Add($path) }
-			} catch { }
-		}
+		try {
+			$path = Join-Path $lib "steamapps\common\Don't Starve Together\mods"
+			if ((Test-Path -LiteralPath $path) -and -not $found.Contains($path)) { $found.Add($path) }
+		} catch { }
 	}
 
 	return $found

@@ -659,7 +659,8 @@ $theirs = "-- 내가 직접 적은 줄`r`nForceEnableMod(`"workshop-1234567890`"
 function Get-SteamLibraries { @($steam) }
 
 $folders = @(Get-DstModFolders)
-Check 'both the game and the server mods folders are found' ($folders.Count -eq 2) ("found " + $folders.Count)
+Check 'only the game mods folder is used, not the server one' `
+	($folders.Count -eq 1 -and $folders[0] -eq $gameMods) (($folders -join ' | '))
 
 $script:reportLines = New-Object System.Collections.Generic.List[string]
 Invoke-Hangul '' | Out-Null
@@ -668,9 +669,8 @@ $dest = Join-Path $gameMods 'mod_korean_patch'
 Check 'the mod folder was created'   (Test-Path -LiteralPath $dest)
 Check 'modinfo.lua was copied'       (Test-Path -LiteralPath (Join-Path $dest 'modinfo.lua'))
 Check 'modmain.lua was copied'       (Test-Path -LiteralPath (Join-Path $dest 'modmain.lua'))
-Check 'the strings file was copied'  (Test-Path -LiteralPath (Join-Path $dest 'scripts/korean_strings.lua'))
-Check 'it went into the server folder too' `
-	(Test-Path -LiteralPath (Join-Path $srvMods 'mod_korean_patch/modmain.lua'))
+Check 'a client-only mod is kept out of the server folder' `
+	(-not (Test-Path -LiteralPath (Join-Path $srvMods 'mod_korean_patch')))
 
 $ms = [IO.File]::ReadAllText((Join-Path $gameMods 'modsettings.lua'))
 Check 'ForceEnableMod was written'   ($ms -match 'ForceEnableMod\("mod_korean_patch"\)')
@@ -684,7 +684,7 @@ Check 'installing twice writes one entry, not two' `
 	("found " + (@([regex]::Matches($ms2, 'ForceEnableMod\("mod_korean_patch"\)'))).Count)
 
 # And the copied file must still be valid Lua after the round trip.
-$copied = [IO.File]::ReadAllText((Join-Path $dest 'scripts/korean_strings.lua'))
+$copied = [IO.File]::ReadAllText((Join-Path $dest 'modmain.lua'))
 Check 'the copied strings file is not empty' ($copied.Length -gt 10000) ([string]$copied.Length)
 Check 'and it still carries Korean'          ($copied -match '[가-힣]')
 
@@ -695,7 +695,7 @@ $script:reportLines = New-Object System.Collections.Generic.List[string]
 Invoke-Hangul 'stop' | Out-Null
 
 Check 'the mod folder is gone'        (-not (Test-Path -LiteralPath $dest))
-Check 'the server copy is gone too'   (-not (Test-Path -LiteralPath (Join-Path $srvMods 'mod_korean_patch')))
+Check 'the server folder is still clean' (-not (Test-Path -LiteralPath (Join-Path $srvMods 'mod_korean_patch')))
 
 $ms3 = [IO.File]::ReadAllText((Join-Path $gameMods 'modsettings.lua'))
 Check 'ForceEnableMod was taken out'  (-not ($ms3 -match 'mod_korean_patch'))

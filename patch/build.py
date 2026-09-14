@@ -421,7 +421,7 @@ def main() -> None:
         subprocess.run([sys.executable, str(korean_src / "build_korean.py")], check=True,
                        stdout=subprocess.DEVNULL)
         korean_dst = BUILD / "files" / "mod_korean_patch"
-        for rel in ("modinfo.lua", "modmain.lua", "scripts/korean_strings.lua"):
+        for rel in ("modinfo.lua", "modmain.lua"):
             src = korean_src / rel
             dst = korean_dst / rel
             dst.parent.mkdir(parents=True, exist_ok=True)

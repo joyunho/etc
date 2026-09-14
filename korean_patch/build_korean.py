@@ -11,7 +11,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 TRANS = HERE / "translations"
-OUT = HERE / "scripts" / "korean_strings.lua"
+OUT = HERE / "modmain.lua"
 
 # Mod ids to human names, for the generated comments and the load report.
 NAMES = {
@@ -76,7 +76,7 @@ def main() -> None:
         entries = merged[mid]
         body.append("")
         body.append(f"-- {NAMES.get(mid, mid)}  (workshop-{mid})  {len(entries)}개")
-        body.append(f'if Apply("{mid}") then')
+        body.append(f'pcall(function() if Apply("{mid}") then')
         seen_parents: set[str] = set()
         for path in sorted(entries):
             if not PATH_OK.match(path):
@@ -87,37 +87,51 @@ def main() -> None:
                     body.append("\t" + line)
             body.append(f"\t{lua_path(path)} = {lua_quote(entries[path])}")
             total += 1
-        body.append("end")
+        body.append("end end)")
 
-    header = f"""-- korean_strings.lua  --  자동 생성 파일. 직접 고치지 마세요.
+    header = f"""-- modmain.lua  --  자동 생성 파일. 직접 고치지 마세요.
 --
 -- 모드 {len(merged)}개, 문자열 {total}개.
--- 이 파일은 다른 모드의 파일을 건드리지 않습니다. STRINGS 에 한국어를 덮어쓸
--- 뿐이고, 그것도 해당 모드가 켜져 있을 때만 합니다.
+--
+-- 이 파일이 지켜야 할 것은 하나입니다: 무슨 일이 있어도 게임이 켜지는 것을
+-- 막지 않는다. 글자를 바꾸는 일이 게임을 못 켜게 만들면 아무 의미가 없습니다.
+-- 그래서
+--   * 다른 파일을 부르지 않습니다 (modimport 실패할 일이 없음)
+--   * 전역 변수를 새로 만들지 않습니다 (strict.lua 에 걸릴 일이 없음)
+--   * 설정을 읽지 않습니다 (설정이 없을 때 터질 일이 없음)
+--   * 모드 한 개씩 pcall 로 감쌉니다 (하나가 실패해도 나머지는 적용됨)
+--   * 전체를 다시 pcall 로 감쌉니다 (그래도 실패하면 조용히 아무것도 안 함)
 
-local STRINGS = GLOBAL.STRINGS
-local KnownMods = GLOBAL.KnownModIndex
+local function Translate()
+	local STRINGS = GLOBAL.STRINGS
+	local Index = GLOBAL.KnownModIndex
 
--- 그 모드가 실제로 켜져 있을 때만 덮어씁니다. 안 쓰는 모드의 이름을
--- 미리 심어 두면 다른 모드와 부딪칠 수 있습니다.
-local function Apply(id)
-\tlocal ok, enabled = pcall(function()
-\t\treturn KnownMods:IsModEnabled("workshop-" .. id)
-\t\t\tor KnownMods:IsModForceEnabled("workshop-" .. id)
-\tend)
-\treturn ok and enabled or false
-end
+	-- 그 모드가 실제로 켜져 있을 때만 덮어씁니다. 안 쓰는 모드의 이름을
+	-- 미리 심어 두면 다른 모드와 부딪칠 수 있습니다.
+	local function Apply(id)
+		local ok, enabled = pcall(function()
+			return Index:IsModEnabled("workshop-" .. id)
+				or Index:IsModForceEnabled("workshop-" .. id)
+		end)
+		return ok and enabled or false
+	end
 
--- 한 번만 덮어쓰면 늦게 켜진 모드가 다시 영어로 되돌려 놓을 수 있습니다.
--- 그래서 함수로 감싸 두고, 모드가 전부 올라온 뒤 한 번 더 부릅니다.
-local function ApplyAll()
 """
-
     footer = """
 end
 
-ApplyAll()
-GLOBAL.KOREAN_PATCH_APPLY = ApplyAll
+-- 한 번만 덮어쓰면 늦게 올라온 모드가 다시 제 글자로 되돌려 놓을 수 있습니다.
+-- 그래서 월드가 다 뜬 뒤 한 번 더 부릅니다. 같은 값을 다시 넣는 것이라
+-- 두 번 해도 문제가 없습니다.
+local ok, err = pcall(Translate)
+if not ok then
+	print("[한글패치] 적용하지 못했습니다: " .. tostring(err))
+	return
+end
+
+AddSimPostInit(function()
+	pcall(Translate)
+end)
 """
 
     # every generated line sits inside ApplyAll(), so indent the body one step
