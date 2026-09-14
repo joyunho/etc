@@ -14,7 +14,7 @@
 #   Windows PowerShell 5.1 (윈도우 기본 내장) 에서 동작하도록 작성했습니다.
 
 param(
-	[ValidateSet('install', 'restore', 'diagnose', 'collect', 'collectmods', 'lasterror', 'modcheck', 'bisect', 'collecttext', 'korean')]
+	[ValidateSet('install', 'restore', 'diagnose', 'collect', 'collectmods', 'lasterror', 'modcheck', 'bisect', 'collecttext', 'korean', 'hangul')]
 	[string]$Action = 'install',
 
 	# 자동 탐색이 실패할 때 폴더를 직접 지정할 수 있습니다.
@@ -2888,6 +2888,178 @@ function Invoke-SetKorean($arg, $root) {
 	Write-Host ''
 }
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  한글 패치 모드 넣기 / 빼기
+# ══════════════════════════════════════════════════════════════════════════════
+#
+#  mod_korean_patch 폴더를 DST 의 mods 폴더에 넣고, modsettings.lua 에
+#  ForceEnableMod 한 줄을 적어 게임이 자동으로 켜게 합니다.
+#
+#  손대는 것은 두 가지뿐입니다.
+#    1) mods\mod_korean_patch\        <- 우리가 만든 폴더. 통째로 넣고 통째로 뺍니다.
+#    2) mods\modsettings.lua          <- 표시(마커) 사이 한 줄만 넣고 뺍니다.
+#  다른 모드의 파일은 건드리지 않습니다.
+
+$KOREAN_MOD_DIR = 'mod_korean_patch'
+$KO_MARK_BEGIN  = '-- [KOREAN_PATCH_BEGIN] 모드 한글 패치'
+$KO_MARK_END    = '-- [KOREAN_PATCH_END]'
+
+# DST 가 깔린 곳들. 게임과 데디케이티드 서버는 mods 폴더가 따로입니다.
+function Get-DstModFolders {
+	$found = New-Object System.Collections.Generic.List[string]
+
+	foreach ($lib in (Get-SteamLibraries)) {
+		foreach ($rel in @("steamapps\common\Don't Starve Together\mods",
+		                   "steamapps\common\Don't Starve Together Dedicated Server\mods")) {
+			try {
+				$path = Join-Path $lib $rel
+				if ((Test-Path -LiteralPath $path) -and -not $found.Contains($path)) { $found.Add($path) }
+			} catch { }
+		}
+	}
+
+	return $found
+}
+
+# modsettings.lua 에 ForceEnableMod 한 줄을 넣습니다. 이미 있으면 그냥 둡니다.
+function Enable-KoreanMod($modsFolder) {
+	$file = Join-Path $modsFolder 'modsettings.lua'
+
+	$text = ''
+	if (Test-Path -LiteralPath $file) {
+		try { $text = [IO.File]::ReadAllText($file) } catch { $text = '' }
+	}
+
+	if ($text -match [regex]::Escape($KO_MARK_BEGIN)) { return 'already' }
+
+	$block = "`r`n" + $KO_MARK_BEGIN + "`r`n" +
+		'ForceEnableMod("' + $KOREAN_MOD_DIR + '")' + "`r`n" +
+		$KO_MARK_END + "`r`n"
+
+	try {
+		[IO.File]::WriteAllText($file, $text + $block, (New-Object System.Text.UTF8Encoding($false)))
+		return 'added'
+	} catch {
+		return 'failed'
+	}
+}
+
+function Disable-KoreanMod($modsFolder) {
+	$file = Join-Path $modsFolder 'modsettings.lua'
+	if (-not (Test-Path -LiteralPath $file)) { return 'none' }
+
+	$text = $null
+	try { $text = [IO.File]::ReadAllText($file) } catch { return 'failed' }
+	if ($text -notmatch [regex]::Escape($KO_MARK_BEGIN)) { return 'none' }
+
+	# 표시 사이만 잘라 냅니다. 사용자가 직접 쓴 다른 줄은 건드리지 않습니다.
+	$pattern = '\r?\n?' + [regex]::Escape($KO_MARK_BEGIN) + '[\s\S]*?' + [regex]::Escape($KO_MARK_END) + '\r?\n?'
+	$text = [regex]::Replace($text, $pattern, "`r`n")
+
+	try {
+		[IO.File]::WriteAllText($file, $text, (New-Object System.Text.UTF8Encoding($false)))
+		return 'removed'
+	} catch { return 'failed' }
+}
+
+function Copy-KoreanMod($source, $dest) {
+	if (Test-Path -LiteralPath $dest) { Remove-Item -LiteralPath $dest -Recurse -Force }
+	New-Item -ItemType Directory -Force -Path $dest | Out-Null
+
+	$n = 0
+	foreach ($f in (Get-ChildItem -LiteralPath $source -Recurse -File)) {
+		$relative = $f.FullName.Substring($source.Length).TrimStart('\', '/')
+		$target   = Join-Path $dest $relative
+		$dir      = Split-Path -Parent $target
+		if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+		Copy-Item -LiteralPath $f.FullName -Destination $target -Force
+		$n++
+	}
+	return $n
+}
+
+function Invoke-Hangul($arg) {
+	$removing = ($arg -match '^(stop|remove|uninstall|지우|제거|빼)')
+
+	if ($removing) { Write-Head '한글 패치 빼기' } else { Write-Head '한글 패치 넣기' }
+
+	$source = Join-Path (Join-Path $PackageRoot 'files') $KOREAN_MOD_DIR
+	if (-not $removing -and -not (Test-Path -LiteralPath $source)) {
+		Write-Fail '패키지 안에서 한글 패치 파일을 찾지 못했습니다.'
+		Write-Host ('  여기 있어야 합니다: ' + $source)
+		Write-Host '  zip 을 폴더째 풀었는지 확인해 주세요.'
+		Write-Host ''
+		return
+	}
+
+	$folders = @(Get-DstModFolders)
+	if ($folders.Count -eq 0) {
+		Write-Fail "Don't Starve Together 가 깔린 곳을 찾지 못했습니다."
+		Write-Host '  보통 여기입니다:'
+		Write-Host "    ...\steamapps\common\Don't Starve Together\mods"
+		Write-Host ''
+		return
+	}
+
+	$done = 0
+	foreach ($mods in $folders) {
+		$dest = Join-Path $mods $KOREAN_MOD_DIR
+		Write-Host ''
+		Write-Host ('  ' + (Protect-Text $mods)) -ForegroundColor Gray
+
+		if ($removing) {
+			try {
+				if (Test-Path -LiteralPath $dest) {
+					Remove-Item -LiteralPath $dest -Recurse -Force
+					Write-Ok '모드 폴더를 지웠습니다.'
+				} else {
+					Write-Info '모드 폴더가 없습니다 (이미 빠져 있음).'
+				}
+			} catch {
+				Write-Fail ('모드 폴더를 지우지 못했습니다: ' + $_.Exception.Message)
+				continue
+			}
+
+			switch (Disable-KoreanMod $mods) {
+				'removed' { Write-Ok 'modsettings.lua 에서 자동 켜기를 뺐습니다.' }
+				'none'    { Write-Info 'modsettings.lua 에는 손댄 적이 없습니다.' }
+				default   { Write-Fail 'modsettings.lua 를 고치지 못했습니다.' }
+			}
+			$done++
+			continue
+		}
+
+		try {
+			$n = Copy-KoreanMod $source $dest
+			Write-Ok ('파일 ' + $n + ' 개를 넣었습니다.')
+		} catch {
+			Write-Fail ('넣지 못했습니다: ' + $_.Exception.Message)
+			Write-Host '  게임이 켜져 있으면 끄고 다시 실행해 주세요.'
+			continue
+		}
+
+		switch (Enable-KoreanMod $mods) {
+			'added'   { Write-Ok 'modsettings.lua 에 자동 켜기를 적었습니다.' }
+			'already' { Write-Info '자동 켜기는 이미 적혀 있습니다.' }
+			default   { Write-Warn 'modsettings.lua 를 고치지 못했습니다. 게임 안에서 직접 켜 주세요.' }
+		}
+		$done++
+	}
+
+	Write-Host ''
+	if ($done -eq 0) {
+		Write-Fail '아무것도 하지 못했습니다.'
+	} elseif ($removing) {
+		Write-Host ('  ' + $done + ' 곳에서 뺐습니다. 게임을 다시 켜면 원래 글자로 돌아갑니다.') -ForegroundColor Green
+	} else {
+		Write-Host ('  ' + $done + ' 곳에 넣었습니다.') -ForegroundColor Green
+		Write-Host '  게임을 다시 켜면 적용됩니다. 모드 목록에서 켤 필요 없습니다.' -ForegroundColor Green
+		Write-Host ''
+		Write-Host '  빼시려면: hangul.bat stop'
+	}
+	Write-Host ''
+}
+
 if ($env:NPCHOF_DOTSOURCE_ONLY -eq '1') { return }
 
 if ($Action -eq 'diagnose') {
@@ -2927,6 +3099,11 @@ if ($Action -eq 'collecttext') {
 
 if ($Action -eq 'korean') {
 	Invoke-SetKorean $Arg $ModFolder
+	exit 0
+}
+
+if ($Action -eq 'hangul') {
+	Invoke-Hangul $Arg
 	exit 0
 }
 

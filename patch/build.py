@@ -15,6 +15,7 @@ file for NPC Friends, then assembles the ready-to-run zip:
         bisect.bat             <- halve the mod list until the culprit is found
         translate.bat          <- collect every mod's text for translating
         korean.bat             <- switch mods to the Korean they already ship
+        hangul.bat             <- install the Korean string patch into the game
         README.txt
         files/npc_hof_cooking.lua
         tools/patch.ps1
@@ -28,6 +29,8 @@ from __future__ import annotations
 
 import re
 import shutil
+import subprocess
+import sys
 import zipfile
 from pathlib import Path
 
@@ -354,6 +357,37 @@ NPC Friends 의 왈리 NPC 가 Heap of Foods 를 비롯한 음식 모드의 요�
   돌려놓습니다 (두 번 실행해도 백업은 덮어쓰지 않습니다).
 
 
+[ 모드 글자를 한국어로 - hangul.bat ]
+
+  hangul.bat 을 더블클릭하면 한글 패치 모드를 게임에 넣고 켜 줍니다.
+  모드 목록에서 따로 켤 필요 없습니다. 게임만 다시 켜면 됩니다.
+
+  모드 8개, 문자열 1224개를 한국어로 바꿉니다.
+
+      937개  景熹家居 JingXi Furniture
+      129개  池中木 Pond OceanTree
+       60개  DST Coffee and More
+       53개  [API] Modded Skins
+       22개  Shadow Field Exciter
+        9개  Large Chest (HD)
+        9개  ActionQueue RB3
+        5개  Winona's Porta-base V2
+
+  손대는 것은 두 가지뿐입니다.
+
+      mods\mod_korean_patch\     우리가 만든 폴더. 통째로 넣고 통째로 뺍니다.
+      mods\modsettings.lua       표시 사이 한 줄만 넣고 뺍니다.
+
+  다른 모드의 파일은 한 글자도 안 건드립니다. 이 패치는 게임이 이미 읽어
+  들인 STRINGS 표에 한국어를 덮어쓸 뿐이라, 번역이 틀려도 글자가 이상해질
+  뿐이고 모드나 서버가 멈추지는 않습니다.
+
+  빼시려면 hangul.bat stop 을 실행하세요. 폴더와 그 한 줄만 없앱니다.
+
+  * 한글이 네모로 보이면 번역이 아니라 글꼴 문제입니다.
+    한글 글꼴을 넣어 주는 모드를 같이 켜 두세요.
+
+
 [ 개인정보 ]
 
   collect.bat 과 collectmods.bat 은 계정 이름, 스팀 ID, 토큰처럼 보이는
@@ -381,7 +415,19 @@ def main() -> None:
     )
 
     # cmd.exe wants CRLF; these two are ASCII-only on purpose.
-    for name in ("install.bat", "restore.bat", "diagnose.bat", "collect.bat", "collectmods.bat", "lasterror.bat", "modcheck.bat", "bisect.bat", "translate.bat", "korean.bat"):
+    # 한글 패치 모드도 같이 담습니다. hangul.bat 이 이것을 mods 폴더로 옮깁니다.
+    korean_src = REPO / "korean_patch"
+    if korean_src.exists():
+        subprocess.run([sys.executable, str(korean_src / "build_korean.py")], check=True,
+                       stdout=subprocess.DEVNULL)
+        korean_dst = BUILD / "files" / "mod_korean_patch"
+        for rel in ("modinfo.lua", "modmain.lua", "scripts/korean_strings.lua"):
+            src = korean_src / rel
+            dst = korean_dst / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, dst)
+
+    for name in ("install.bat", "restore.bat", "diagnose.bat", "collect.bat", "collectmods.bat", "lasterror.bat", "modcheck.bat", "bisect.bat", "translate.bat", "korean.bat", "hangul.bat"):
         text = (PATCH / "templates" / name).read_text(encoding="utf-8")
         text.encode("ascii")  # fail the build if Korean sneaks in
         (BUILD / name).write_bytes(text.replace("\n", "\r\n").encode("ascii"))

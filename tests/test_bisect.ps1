@@ -642,6 +642,73 @@ foreach ($stray in @('한국어켜기.txt')) {
 $kb = Join-Path $package '_korean_backup'
 if (Test-Path -LiteralPath $kb) { Remove-Item -LiteralPath $kb -Recurse -Force }
 
+
+Write-Host ''
+Write-Host '=== 13. hangul: install the Korean patch into the game folder ==='
+
+$steam = Join-Path $sandbox "steam"
+$gameMods = Join-Path $steam "steamapps/common/Don't Starve Together/mods"
+$srvMods  = Join-Path $steam "steamapps/common/Don't Starve Together Dedicated Server/mods"
+New-Item -ItemType Directory -Force -Path $gameMods | Out-Null
+New-Item -ItemType Directory -Force -Path $srvMods  | Out-Null
+
+# A modsettings.lua the player already edited: it must survive untouched.
+$theirs = "-- 내가 직접 적은 줄`r`nForceEnableMod(`"workshop-1234567890`")`r`n"
+[IO.File]::WriteAllText((Join-Path $gameMods 'modsettings.lua'), $theirs)
+
+function Get-SteamLibraries { @($steam) }
+
+$folders = @(Get-DstModFolders)
+Check 'both the game and the server mods folders are found' ($folders.Count -eq 2) ("found " + $folders.Count)
+
+$script:reportLines = New-Object System.Collections.Generic.List[string]
+Invoke-Hangul '' | Out-Null
+
+$dest = Join-Path $gameMods 'mod_korean_patch'
+Check 'the mod folder was created'   (Test-Path -LiteralPath $dest)
+Check 'modinfo.lua was copied'       (Test-Path -LiteralPath (Join-Path $dest 'modinfo.lua'))
+Check 'modmain.lua was copied'       (Test-Path -LiteralPath (Join-Path $dest 'modmain.lua'))
+Check 'the strings file was copied'  (Test-Path -LiteralPath (Join-Path $dest 'scripts/korean_strings.lua'))
+Check 'it went into the server folder too' `
+	(Test-Path -LiteralPath (Join-Path $srvMods 'mod_korean_patch/modmain.lua'))
+
+$ms = [IO.File]::ReadAllText((Join-Path $gameMods 'modsettings.lua'))
+Check 'ForceEnableMod was written'   ($ms -match 'ForceEnableMod\("mod_korean_patch"\)')
+Check "the player's own lines survive" ($ms -match 'workshop-1234567890' -and $ms -match '내가 직접 적은 줄')
+
+# Running it twice must not stack the block up.
+Invoke-Hangul '' | Out-Null
+$ms2 = [IO.File]::ReadAllText((Join-Path $gameMods 'modsettings.lua'))
+Check 'installing twice writes one entry, not two' `
+	((@([regex]::Matches($ms2, 'ForceEnableMod\("mod_korean_patch"\)'))).Count -eq 1) `
+	("found " + (@([regex]::Matches($ms2, 'ForceEnableMod\("mod_korean_patch"\)'))).Count)
+
+# And the copied file must still be valid Lua after the round trip.
+$copied = [IO.File]::ReadAllText((Join-Path $dest 'scripts/korean_strings.lua'))
+Check 'the copied strings file is not empty' ($copied.Length -gt 10000) ([string]$copied.Length)
+Check 'and it still carries Korean'          ($copied -match '[가-힣]')
+
+Write-Host ''
+Write-Host '--- and taking it back out ---'
+
+$script:reportLines = New-Object System.Collections.Generic.List[string]
+Invoke-Hangul 'stop' | Out-Null
+
+Check 'the mod folder is gone'        (-not (Test-Path -LiteralPath $dest))
+Check 'the server copy is gone too'   (-not (Test-Path -LiteralPath (Join-Path $srvMods 'mod_korean_patch')))
+
+$ms3 = [IO.File]::ReadAllText((Join-Path $gameMods 'modsettings.lua'))
+Check 'ForceEnableMod was taken out'  (-not ($ms3 -match 'mod_korean_patch'))
+Check "the player's own lines are still there" `
+	($ms3 -match 'workshop-1234567890' -and $ms3 -match '내가 직접 적은 줄')
+
+# Removing when nothing is installed must not fail or damage the file.
+Invoke-Hangul 'stop' | Out-Null
+Check 'removing twice is harmless' `
+	([IO.File]::ReadAllText((Join-Path $gameMods 'modsettings.lua')) -match 'workshop-1234567890')
+
+Remove-Item -LiteralPath $steam -Recurse -Force -ErrorAction SilentlyContinue
+
 # ── cleanup ─────────────────────────────────────────────────────────────────
 Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
 foreach ($stray in @('범인모드.txt', 'bisect_state.json')) {
