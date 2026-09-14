@@ -14,6 +14,7 @@ file for NPC Friends, then assembles the ready-to-run zip:
         modcheck.bat           <- list which mods collide with which
         bisect.bat             <- halve the mod list until the culprit is found
         translate.bat          <- collect every mod's text for translating
+        korean.bat             <- switch mods to the Korean they already ship
         README.txt
         files/npc_hof_cooking.lua
         tools/patch.ps1
@@ -332,6 +333,27 @@ NPC Friends 의 왈리 NPC 가 Heap of Foods 를 비롯한 음식 모드의 요�
   가 적혀 있고, 이미 한국어인 모드와 꺼 둔 모드는 따로 빼 둡니다.
 
 
+[ 모드를 한국어로 - korean.bat ]
+
+  큰 모드는 대부분 한국어 번역을 이미 품고 있습니다. 안 보이는 이유는 하나뿐,
+  모드 설정의 언어가 영어로 되어 있어서입니다. 번역할 것이 아니라 켤 것입니다.
+
+  korean.bat 은 모드마다 modinfo.lua 를 읽어 "언어" 설정을 찾고, 그 설정이
+  받는 값 중 한국어에 해당하는 것을 골라 modoverrides.lua 에 적습니다.
+  설정값 하나를 바꾸는 것이라 모드가 깨질 수 없습니다.
+
+  같이 나오는 한국어켜기.txt 는 모드를 셋으로 나눠 보여 줍니다.
+
+    한국어로 바꿨습니다        설정으로 켜진 것
+    설정으로는 못 켜는 모드    한국어 파일은 있는데 고르는 설정이 없음.
+                               이런 모드는 게임 언어를 한국어로 두면
+                               알아서 따라오는 경우가 많습니다.
+    한국어가 아예 없는 모드    이것만 진짜로 번역이 필요합니다.
+
+  되돌리시려면 korean.bat stop 을 실행하세요. 처음 실행할 때 떠 둔 백업으로
+  돌려놓습니다 (두 번 실행해도 백업은 덮어쓰지 않습니다).
+
+
 [ 개인정보 ]
 
   collect.bat 과 collectmods.bat 은 계정 이름, 스팀 ID, 토큰처럼 보이는
@@ -359,7 +381,7 @@ def main() -> None:
     )
 
     # cmd.exe wants CRLF; these two are ASCII-only on purpose.
-    for name in ("install.bat", "restore.bat", "diagnose.bat", "collect.bat", "collectmods.bat", "lasterror.bat", "modcheck.bat", "bisect.bat", "translate.bat"):
+    for name in ("install.bat", "restore.bat", "diagnose.bat", "collect.bat", "collectmods.bat", "lasterror.bat", "modcheck.bat", "bisect.bat", "translate.bat", "korean.bat"):
         text = (PATCH / "templates" / name).read_text(encoding="utf-8")
         text.encode("ascii")  # fail the build if Korean sneaks in
         (BUILD / name).write_bytes(text.replace("\n", "\r\n").encode("ascii"))

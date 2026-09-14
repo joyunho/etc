@@ -513,13 +513,134 @@ if ($zips.Count -ge 1) {
 		Check 'the zip carries the po files'  (($entries | Where-Object { $_ -like '*chinese.po' }).Count -eq 1)
 		Check 'the zip carries the lua text'  (($entries | Where-Object { $_ -like '*mod_700000002/modmain.lua' }).Count -eq 1)
 		Check 'the zip leaves plain code out' (($entries | Where-Object { $_ -like '*nothing.lua' }).Count -eq 0)
-		Check 'zip entries use forward slashes' (($entries | Where-Object { $_ -like '*\*' }).Count -eq 0)
+		Check 'zip entries use forward slashes' ((@($entries | Where-Object { $_ -like '*\*' })).Count -eq 0) `
+		($entries -join ' ')
+	Check 'the zip really has folders, not flattened names' `
+		((@($entries | Where-Object { $_ -like 'mod_*/*' })).Count -ge 3)
 	} finally { $z.Dispose() }
 	foreach ($zz in $zips) { Remove-Item -LiteralPath $zz.FullName -Force }
 }
 
 Remove-Item -LiteralPath $tRoot -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath (Join-Path $sandbox 'textklei') -Recurse -Force -ErrorAction SilentlyContinue
+
+
+Write-Host ''
+Write-Host '=== 12. korean: switch on the Korean that mods already ship ==='
+
+$kRoot = Join-Path $sandbox 'ko'
+$kKlei = Join-Path $sandbox 'koklei/Klei/DoNotStarveTogether/Cluster_1'
+New-Item -ItemType Directory -Force -Path $kKlei | Out-Null
+function Get-KleiRoots { @((Join-Path $sandbox 'koklei/Klei/DoNotStarveTogether')) }
+
+function New-KoMod($id, $info, $extra) {
+	$d = Join-Path $kRoot ('workshop-' + $id)
+	New-Item -ItemType Directory -Force -Path $d | Out-Null
+	$null = $d
+	[IO.File]::WriteAllText((Join-Path $d 'modinfo.lua'), $info, (New-Object Text.UTF8Encoding($false)))
+	if ($extra) { [IO.File]::WriteAllText((Join-Path $d 'strings_kr.lua'), $extra, (New-Object Text.UTF8Encoding($false))) }
+	return $d
+}
+
+# The Heap of Foods shape: the option table is named, and the Korean entry is
+# recognisable only by its data value because the description is a code lookup.
+New-KoMod '800000001' @'
+name = "Foods"
+version = "1.0"
+api_version = 10
+local LANGUAGE_OPTIONS =
+{
+	{ description = STRINGS.SETTINGS.LANGUAGE.OPTS.en, data = false },
+	{ description = STRINGS.SETTINGS.LANGUAGE.OPTS.zh, data = "zh" },
+	{ description = STRINGS.SETTINGS.LANGUAGE.OPTS.kr, data = "kr" },
+}
+configuration_options =
+{
+	{ name = "LANGUAGE", label = LANGUAGE_LABEL, options = LANGUAGE_OPTIONS, default = false },
+}
+'@ $null
+
+# The Show Me shape: options table written inline, starting on the next line.
+New-KoMod '800000002' @'
+name = "Show Me"
+version = "1.0"
+api_version = 10
+configuration_options = {
+ {
+  name = "lang",
+  label = "Language",
+  options =
+  {
+   {description = "Auto", data = "auto"},
+   {description = "kr", data = "kr", hover = "Korean"},
+  },
+  default = "auto",
+ },
+}
+'@ $null
+
+# Korean text on disk but no option to select it: the game language decides.
+New-KoMod '800000003' "name = `"Manual`"`nversion = `"1.0`"`napi_version = 10" `
+	"STRINGS.NAMES.X = `"한국어 문자열이 여기 잔뜩 들어 있습니다. 여든 자가 넘어야 세어집니다. 한국어 한국어 한국어 한국어 한국어 한국어 한국어 한국어 한국어 한국어 한국어 한국어 한국어`""
+
+# Nothing Korean anywhere: this is the one that actually needs translating.
+New-KoMod '800000004' "name = `"English Only`"`nversion = `"1.0`"`napi_version = 10" $null
+
+[IO.File]::WriteAllText((Join-Path $kKlei 'modoverrides.lua'), @'
+return {
+  ["workshop-800000001"] = { enabled = true, configuration_options = { OTHER = 5 } },
+  ["workshop-800000002"] = { enabled = true },
+  ["workshop-800000003"] = { enabled = true },
+  ["workshop-800000004"] = { enabled = true },
+}
+'@)
+
+$o1 = Find-KoreanOption (Join-Path $kRoot 'workshop-800000001')
+Check 'a named option table is resolved'     ($o1.Option -eq 'LANGUAGE' -and $o1.Value -eq 'kr') ($o1.Option + '=' + $o1.Value)
+$o2 = Find-KoreanOption (Join-Path $kRoot 'workshop-800000002')
+Check 'an inline option table is resolved'   ($o2.Option -eq 'lang' -and $o2.Value -eq 'kr') ($o2.Option + '=' + $o2.Value)
+$o3 = Find-KoreanOption (Join-Path $kRoot 'workshop-800000003')
+Check 'a mod with no language option is left alone' ($o3.Value -eq $null)
+
+$ovr = Join-Path $kKlei 'modoverrides.lua'
+$before = [IO.File]::ReadAllText($ovr)
+
+$script:reportLines = New-Object System.Collections.Generic.List[string]
+Invoke-SetKorean '' $kRoot | Out-Null
+$rk = ($script:reportLines -join "`n")
+$after = [IO.File]::ReadAllText($ovr)
+
+Check 'the option is written into an existing config block' `
+	($after -match 'LANGUAGE = "kr"') $after
+Check 'the config it already had survives'  ($after -match 'OTHER = 5')
+Check 'a config block is created when there was none' `
+	($after -match '"workshop-800000002"\] = \{ configuration_options = \{ lang = "kr" \}')
+Check 'enabled is never touched' `
+	((@([regex]::Matches($after, 'enabled = true'))).Count -eq 4)
+Check 'the mod with no option is not given one' (-not ($after -match '800000003"\] = \{ configuration_options'))
+
+Check 'the report lists what was switched'   ($rk -match '(?s)한국어로 바꿨습니다.*800000001')
+Check 'the manual ones are listed apart'     ($rk -match '(?s)설정으로는 못 켜는.*800000003')
+Check 'the untranslated ones are listed apart' ($rk -match '(?s)한국어가 아예 없는.*800000004')
+
+# Running twice must not double up.
+Invoke-SetKorean '' $kRoot | Out-Null
+$twice = [IO.File]::ReadAllText($ovr)
+Check 'running it again changes nothing more' `
+	((@([regex]::Matches($twice, 'LANGUAGE = "kr"'))).Count -eq 1) `
+	("found " + (@([regex]::Matches($twice, 'LANGUAGE = "kr"'))).Count)
+
+Invoke-SetKorean 'stop' $kRoot | Out-Null
+Check 'stop restores the original file byte for byte' ([IO.File]::ReadAllText($ovr) -eq $before)
+
+Remove-Item -LiteralPath $kRoot -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath (Join-Path $sandbox 'koklei') -Recurse -Force -ErrorAction SilentlyContinue
+foreach ($stray in @('한국어켜기.txt')) {
+	$f = Join-Path $package $stray
+	if (Test-Path -LiteralPath $f) { Remove-Item -LiteralPath $f -Force }
+}
+$kb = Join-Path $package '_korean_backup'
+if (Test-Path -LiteralPath $kb) { Remove-Item -LiteralPath $kb -Recurse -Force }
 
 # ── cleanup ─────────────────────────────────────────────────────────────────
 Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue

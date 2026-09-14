@@ -14,7 +14,7 @@
 #   Windows PowerShell 5.1 (윈도우 기본 내장) 에서 동작하도록 작성했습니다.
 
 param(
-	[ValidateSet('install', 'restore', 'diagnose', 'collect', 'collectmods', 'lasterror', 'modcheck', 'bisect', 'collecttext')]
+	[ValidateSet('install', 'restore', 'diagnose', 'collect', 'collectmods', 'lasterror', 'modcheck', 'bisect', 'collecttext', 'korean')]
 	[string]$Action = 'install',
 
 	# 자동 탐색이 실패할 때 폴더를 직접 지정할 수 있습니다.
@@ -562,6 +562,27 @@ function Protect-Text($text) {
 	return $t
 }
 
+# 폴더를 zip 으로 묶습니다.
+#
+# [IO.Compression.ZipFile]::CreateFromDirectory 를 쓰면 안 됩니다.
+# Windows PowerShell 5.1 이 쓰는 .NET Framework 는 zip 안의 경로 구분자를
+# 역슬래시로 적습니다. zip 표준은 슬래시라서, 받는 쪽에서 풀면 폴더가 안 생기고
+# "logs\log1.txt" 같은 이름의 파일 하나가 됩니다. 직접 적으면 그럴 일이 없습니다.
+function Write-ZipFolder($folder, $zip) {
+	Add-Type -AssemblyName System.IO.Compression -ErrorAction SilentlyContinue
+	Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+
+	$archive = [IO.Compression.ZipFile]::Open($zip, 'Create')
+	try {
+		$base = (Resolve-Path -LiteralPath $folder).Path.TrimEnd('\', '/')
+		foreach ($f in (Get-ChildItem -LiteralPath $folder -Recurse -File -ErrorAction SilentlyContinue)) {
+			$entry = $f.FullName.Substring($base.Length).TrimStart('\', '/').Replace('\', '/')
+			[void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+				$archive, $f.FullName, $entry, [IO.Compression.CompressionLevel]::Optimal)
+		}
+	} finally { $archive.Dispose() }
+}
+
 function Invoke-Diagnose {
 	$lines = Build-Report
 
@@ -686,9 +707,7 @@ function Invoke-Collect {
 		if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
 		# Compress-Archive writes backslashes as the entry separator, which the
 		# zip format does not allow and many extractors turn into one long file
-		# name. CreateFromDirectory writes '/' the way it should.
-		Add-Type -AssemblyName System.IO.Compression.FileSystem
-		[System.IO.Compression.ZipFile]::CreateFromDirectory($staging, $zip)
+		Write-ZipFolder $staging $zip
 	} catch {
 		Write-Fail ('압축에 실패했습니다: ' + $_.Exception.Message)
 		Write-Host ('모아 둔 폴더를 직접 압축해 주세요: ' + $staging)
@@ -983,8 +1002,7 @@ function Invoke-CollectMods($root) {
 
 	try {
 		if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
-		Add-Type -AssemblyName System.IO.Compression.FileSystem
-		[System.IO.Compression.ZipFile]::CreateFromDirectory($staging, $zip)
+		Write-ZipFolder $staging $zip
 	} catch {
 		Write-Fail ('압축에 실패했습니다: ' + $_.Exception.Message)
 		Write-Host ('모아 둔 폴더를 직접 압축해 주세요: ' + $staging)
@@ -2541,9 +2559,7 @@ function Invoke-CollectText($root) {
 	$zip = Join-Path $PackageRoot ('DST_번역대상_' + $stamp + '.zip')
 	try {
 		if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
-		Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
-		[System.IO.Compression.ZipFile]::CreateFromDirectory($staging, $zip,
-			[System.IO.Compression.CompressionLevel]::Optimal, $false)
+		Write-ZipFolder $staging $zip
 	} catch {
 		Write-Fail ('압축에 실패했습니다: ' + $_.Exception.Message)
 		Write-Host ('  담아 둔 폴더는 여기 있습니다: ' + $staging)
@@ -2561,6 +2577,314 @@ function Invoke-CollectText($root) {
 	Write-Host ('  번역이 필요한 모드 ' + $todo.Count + ' 개, 이미 한국어인 모드 ' + $done.Count + ' 개') -ForegroundColor Green
 	Write-Host '  이 zip 을 보내 주시면 번역해서 돌려 드리겠습니다.' -ForegroundColor Green
 	try { Start-Process explorer.exe ('/select,"' + $zip + '"') } catch { }
+	Write-Host ''
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  모드에 이미 들어 있는 한국어를 켜기
+# ══════════════════════════════════════════════════════════════════════════════
+#
+#  큰 모드는 대부분 한국어 번역을 이미 품고 있습니다. 안 보이는 이유는 하나뿐,
+#  모드 설정에서 언어가 영어로 되어 있어서입니다. 번역할 것이 아니라 켤 것입니다.
+#
+#  이 도구는 모드마다 modinfo.lua 를 읽어 "언어" 설정을 찾고, 그 설정이 받는
+#  값 중 한국어에 해당하는 것을 골라 modoverrides.lua 에 적어 줍니다.
+#  설정값 하나를 바꾸는 것이라 모드가 깨질 수 없습니다.
+
+# 한국어를 가리키는 값. 모드마다 쓰는 말이 다릅니다.
+$KOREAN_CODES = @('kr', 'ko', 'kor', 'korean', 'ko_kr', 'kr_kr', 'kokr')
+
+# 이 글자가 보이면 한국어 항목입니다.
+$KOREAN_WORDS = '한국|한글|조선말|Korean|KOREAN'
+
+# modinfo.lua 안의 "options = 무엇" 이 가리키는 표를 찾아 돌려줍니다.
+function Resolve-OptionTable($text, $expr) {
+	if ([string]::IsNullOrWhiteSpace($expr)) { return $null }
+
+	# options = { ... } 처럼 바로 적힌 경우
+	if ($expr.TrimStart().StartsWith('{')) { return $expr }
+
+	# options = LANGUAGE_OPTIONS / options.language 처럼 이름으로 적힌 경우
+	$leaf = ($expr -split '\.')[-1].Trim()
+	if ([string]::IsNullOrWhiteSpace($leaf)) { return $null }
+
+	$m = [regex]::Match($text, '(?m)^\s*(?:local\s+)?' + [regex]::Escape($leaf) + '\s*=\s*(\{)')
+	if (-not $m.Success) {
+		$m = [regex]::Match($text, '(?m)^\s*' + [regex]::Escape($leaf) + '\s*=\s*(\{)')
+		if (-not $m.Success) { return $null }
+	}
+
+	# 중괄호 짝을 세어 표 끝을 찾습니다.
+	$depth = 0
+	for ($i = $m.Groups[1].Index; $i -lt $text.Length; $i++) {
+		if ($text[$i] -eq '{') { $depth++ }
+		elseif ($text[$i] -eq '}') {
+			$depth--
+			if ($depth -eq 0) { return $text.Substring($m.Groups[1].Index, $i - $m.Groups[1].Index + 1) }
+		}
+	}
+	return $null
+}
+
+# 이 모드가 한국어 설정을 받는다면 (설정이름, 값) 을 돌려줍니다.
+function Find-KoreanOption($modPath) {
+	$out = [pscustomobject]@{ Option = $null; Value = $null; Why = '' }
+
+	$file = Join-Path $modPath 'modinfo.lua'
+	if (-not (Test-Path -LiteralPath $file)) { $out.Why = 'modinfo.lua 없음'; return $out }
+
+	$text = $null
+	try { $text = [IO.File]::ReadAllText($file) } catch { $out.Why = 'modinfo.lua 를 못 읽음'; return $out }
+	if ([string]::IsNullOrEmpty($text)) { $out.Why = 'modinfo.lua 가 비어 있음'; return $out }
+
+	# 이름에 lang 이 든 설정을 찾습니다.
+	# options 는 같은 줄에 올 수도 있고 (options = LANGUAGE_OPTIONS)
+	# 줄을 바꿔 표가 바로 올 수도 있습니다 (options =\n{ ... ).
+	$best = $null
+	foreach ($m in [regex]::Matches($text, 'name\s*=\s*"([^"]+)"([\s\S]{0,600}?)options\s*=\s*(\{|[^,\r\n]+)')) {
+		if ($m.Groups[1].Value -notmatch '(?i)lang') { continue }
+		if ($m.Groups[2].Value -match 'name\s*=\s*"') { continue }   # 다음 설정까지 넘어간 경우
+		$best = $m
+		break
+	}
+
+	if ($best -eq $null) { $out.Why = '언어 설정이 없음'; return $out }
+
+	$out.Option = $best.Groups[1].Value
+
+	if ($best.Groups[3].Value.Trim() -eq '{') {
+		$table = $null
+		$depth = 0
+		$from  = $best.Groups[3].Index
+		for ($i = $from; $i -lt $text.Length; $i++) {
+			if ($text[$i] -eq '{') { $depth++ }
+			elseif ($text[$i] -eq '}') {
+				$depth--
+				if ($depth -eq 0) { $table = $text.Substring($from, $i - $from + 1); break }
+			}
+		}
+	} else {
+		$table = Resolve-OptionTable $text $best.Groups[3].Value
+	}
+
+	if ($table -eq $null) {
+		$out.Why = ('언어 설정 "' + $out.Option + '" 은 찾았는데 값 목록을 못 찾음')
+		return $out
+	}
+
+	# 값 목록에서 한국어 항목을 고릅니다.
+	# 1) data 값 자체가 kr / ko / korean 인 것
+	# 2) 설명에 "한국" 이나 "Korean" 이 든 것
+	foreach ($entry in [regex]::Matches($table, '\{[^{}]*\}')) {
+		$body = $entry.Value
+		$d    = [regex]::Match($body, 'data\s*=\s*"([^"]*)"')
+		if (-not $d.Success) { continue }
+		$value = $d.Groups[1].Value
+
+		if ($KOREAN_CODES -contains $value.ToLower()) {
+			$out.Value = $value
+			$out.Why   = '값 목록에 ' + $value + ' 가 있음'
+			return $out
+		}
+		if ($body -match $KOREAN_WORDS) {
+			$out.Value = $value
+			$out.Why   = '값 목록에 한국어 항목이 있음'
+			return $out
+		}
+	}
+
+	$out.Why = ('언어 설정 "' + $out.Option + '" 에 한국어 값이 없음')
+	return $out
+}
+
+# 모드 폴더에 한국어 글자가 얼마나 있는지. 설정이 없어도 이건 알려 줍니다.
+function Measure-ModKorean($modPath) {
+	$chars = 0
+	$files = 0
+	try {
+		foreach ($f in (Get-ChildItem -LiteralPath $modPath -Recurse -File -Filter *.lua -ErrorAction SilentlyContinue)) {
+			if ($f.Length -gt $MAX_FILE_BYTES) { continue }
+			$t = $null
+			try { $t = [IO.File]::ReadAllText($f.FullName) } catch { continue }
+			$n = ([regex]::Matches($t, '[가-힣]')).Count
+			if ($n -gt 80) { $files++; $chars = $chars + $n }
+		}
+	} catch { }
+	return [pscustomobject]@{ Chars = $chars; Files = $files }
+}
+
+# modoverrides.lua 의 한 모드 블록에 설정값 하나를 적어 넣습니다.
+# enabled 는 건드리지 않고, 다른 설정도 그대로 둡니다.
+function Set-ModConfigOption($files, $id, $key, $value) {
+	$done = 0
+
+	foreach ($file in $files) {
+		$text = $null
+		try { $text = [IO.File]::ReadAllText($file) } catch { continue }
+		if ([string]::IsNullOrEmpty($text)) { continue }
+
+		$blocks = @(Split-ModBlocks $text)
+		for ($i = $blocks.Count - 1; $i -ge 0; $i--) {
+			$b = $blocks[$i]
+			if ($b.Id -ne $id) { continue }
+
+			$body   = $text.Substring($b.Start, $b.Length)
+			$quoted = '"' + $value + '"'
+
+			$co = [regex]::Match($body, 'configuration_options\s*=\s*\{')
+			if ($co.Success) {
+				# 이미 그 설정이 있으면 값만 바꿉니다.
+				$existing = [regex]::Match($body, '(\[\s*")?' + [regex]::Escape($key) + '("\s*\])?\s*=\s*("[^"]*"|[\w.-]+)')
+				if ($existing.Success) {
+					$body = $body.Remove($existing.Index, $existing.Length).Insert($existing.Index,
+						($existing.Groups[1].Value + $key + $existing.Groups[2].Value + ' = ' + $quoted))
+				} else {
+					$at   = $co.Index + $co.Length
+					$body = $body.Insert($at, ' ' + $key + ' = ' + $quoted + ',')
+				}
+			} else {
+				# configuration_options 자체가 없으면 만들어 줍니다.
+				$at   = $b.Open - $b.Start
+				$body = $body.Insert($at, ' configuration_options = { ' + $key + ' = ' + $quoted + ' },')
+			}
+
+			$text = $text.Remove($b.Start, $b.Length).Insert($b.Start, $body)
+			$done++
+		}
+
+		try { [IO.File]::WriteAllText($file, $text, (New-Object System.Text.UTF8Encoding($false))) }
+		catch { Write-Fail ('modoverrides.lua 를 고치지 못했습니다: ' + $file) }
+	}
+
+	return $done
+}
+
+$KOREAN_BACK = '_korean_backup'
+
+function Invoke-SetKorean($arg, $root) {
+	Write-Head '모드에 들어 있는 한국어 켜기'
+
+	$script:reportLines = New-Object System.Collections.Generic.List[string]
+	$backup = Join-Path $PackageRoot $KOREAN_BACK
+
+	$files = @(Get-ModoverrideFiles)
+	if ($files.Count -eq 0) {
+		Write-Fail 'modoverrides.lua 를 찾지 못했습니다.'
+		Write-Host '  데디케이티드 서버(클러스터 폴더)가 있어야 합니다.'
+		Write-Host ''
+		return
+	}
+
+	if ($arg -match '^(stop|restore|undo|되돌|취소)$') {
+		$n = 0
+		if (Test-Path -LiteralPath $backup) {
+			# .lua 만 되돌립니다. 같은 폴더의 .path 는 "어디로 되돌릴지" 적어 둔
+			# 쪽지일 뿐이라, 그것까지 복사하면 modoverrides.lua 가 경로 한 줄짜리
+			# 파일이 되어 버립니다.
+			foreach ($b in (Get-ChildItem -LiteralPath $backup -File -Filter '*.lua')) {
+				$note = Join-Path $backup ($b.BaseName + '.path')
+				if (-not (Test-Path -LiteralPath $note)) { continue }
+				$target = [IO.File]::ReadAllText($note)
+				try { Copy-Item -LiteralPath $b.FullName -Destination $target -Force; $n++ } catch { }
+			}
+		}
+		try { if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Recurse -Force } } catch { }
+		Write-Ok ('원래대로 되돌렸습니다 (' + $n + ' 개).')
+		Write-Host ''
+		return
+	}
+
+	$mods  = Get-AllModFolders $root
+	$onOff = Get-EnabledMods
+
+	# 되돌릴 수 있게 먼저 백업.
+	# 이미 백업이 있으면 덮어쓰지 않습니다. 두 번째로 실행했을 때 덮어쓰면
+	# 백업이 "이미 바꾼 파일"이 되어 버려서 되돌릴 수 없게 됩니다.
+	if (-not (Test-Path -LiteralPath $backup)) {
+		New-Item -ItemType Directory -Force -Path $backup | Out-Null
+		$k = 0
+		foreach ($f in $files) {
+			$k++
+			Copy-Item -LiteralPath $f -Destination (Join-Path $backup ([string]$k + '.lua')) -Force
+			[IO.File]::WriteAllText((Join-Path $backup ([string]$k + '.path')), $f)
+		}
+	}
+
+	Add-Line 'DST 모드 한국어 켜기'
+	Add-Line ((Get-Date).ToString('yyyy-MM-dd HH:mm:ss'))
+	Add-Line ''
+
+	$switched = New-Object System.Collections.Generic.List[string]
+	$already  = New-Object System.Collections.Generic.List[string]
+	$manual   = New-Object System.Collections.Generic.List[string]
+	$nothing  = New-Object System.Collections.Generic.List[string]
+	$index    = 0
+
+	foreach ($mod in ($mods | Sort-Object Number)) {
+		$index++
+		Write-Progress -Activity '모드 설정 확인 중' -Status $mod.Id -PercentComplete (100 * $index / $mods.Count)
+
+		if ($onOff.ContainsKey($mod.Number) -and -not $onOff[$mod.Number]) { continue }
+
+		$info = Read-ModInfo $mod.Path
+		$name = $info.Name
+		if ([string]::IsNullOrWhiteSpace($name)) { $name = 'workshop-' + $mod.Number }
+
+		$ko = Find-KoreanOption $mod.Path
+
+		if ($ko.Value) {
+			$n = Set-ModConfigOption $files $mod.Number $ko.Option $ko.Value
+			if ($n -gt 0) {
+				$switched.Add(('  ' + $mod.Number.PadRight(12) + ($ko.Option + ' = "' + $ko.Value + '"').PadRight(24) + $name))
+			} else {
+				$already.Add(('  ' + $mod.Number.PadRight(12) + '(이 서버에 안 켜져 있음)      ' + $name))
+			}
+			continue
+		}
+
+		$has = Measure-ModKorean $mod.Path
+		if ($has.Files -gt 0) {
+			$manual.Add(('  ' + $mod.Number.PadRight(12) + ('한국어 파일 ' + $has.Files + ' 개').PadRight(24) + $name))
+		} else {
+			$nothing.Add(('  ' + $mod.Number.PadRight(12) + $ko.Why.PadRight(24) + $name))
+		}
+	}
+	Write-Progress -Activity '모드 설정 확인 중' -Completed
+
+	Add-Line ('━━ 한국어로 바꿨습니다 (' + $switched.Count + ' 개) ━━')
+	Add-Line ''
+	if ($switched.Count -eq 0) { Add-Line '  없습니다.' }
+	foreach ($l in $switched) { Add-Line $l }
+
+	Add-Line ''
+	Add-Line ('━━ 한국어 파일은 있는데 설정으로는 못 켜는 모드 (' + $manual.Count + ' 개) ━━')
+	Add-Line ''
+	Add-Line '  이런 모드는 게임 언어가 한국어면 알아서 한국어로 나오는 경우가 많습니다.'
+	Add-Line '  설정 > 언어 를 한국어로 바꿔 보세요.'
+	Add-Line ''
+	foreach ($l in $manual) { Add-Line $l }
+
+	Add-Line ''
+	Add-Line ('━━ 한국어가 아예 없는 모드 (' + $nothing.Count + ' 개) ━━')
+	Add-Line ''
+	Add-Line '  이것들만 실제로 번역이 필요합니다.'
+	Add-Line ''
+	foreach ($l in $nothing) { Add-Line $l }
+
+	Add-Line ''
+	Add-Line '되돌리시려면: korean.bat stop'
+
+	$file = Join-Path $PackageRoot '한국어켜기.txt'
+	try {
+		[IO.File]::WriteAllText($file, (Protect-Text (($script:reportLines) -join "`r`n")),
+			(New-Object System.Text.UTF8Encoding($true)))
+		Write-Host ''
+		Write-Host ('저장했습니다: ' + $file) -ForegroundColor Green
+		try { Start-Process notepad.exe $file } catch { }
+	} catch { }
+
+	Write-Host ''
+	Write-Host ('  ' + $switched.Count + ' 개 모드를 한국어로 바꿨습니다. 서버를 다시 켜면 적용됩니다.') -ForegroundColor Green
 	Write-Host ''
 }
 
@@ -2598,6 +2922,11 @@ if ($Action -eq 'bisect') {
 
 if ($Action -eq 'collecttext') {
 	Invoke-CollectText $ModFolder
+	exit 0
+}
+
+if ($Action -eq 'korean') {
+	Invoke-SetKorean $Arg $ModFolder
 	exit 0
 }
 
