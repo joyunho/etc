@@ -14,7 +14,7 @@
 #   Windows PowerShell 5.1 (윈도우 기본 내장) 에서 동작하도록 작성했습니다.
 
 param(
-	[ValidateSet('install', 'restore', 'diagnose', 'collect', 'collectmods', 'lasterror', 'modcheck', 'bisect')]
+	[ValidateSet('install', 'restore', 'diagnose', 'collect', 'collectmods', 'lasterror', 'modcheck', 'bisect', 'collecttext')]
 	[string]$Action = 'install',
 
 	# 자동 탐색이 실패할 때 폴더를 직접 지정할 수 있습니다.
@@ -2316,6 +2316,254 @@ function Invoke-Bisect($arg) {
 	Write-Host ''
 }
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  번역할 글자가 든 파일만 모으기
+# ══════════════════════════════════════════════════════════════════════════════
+#
+#  DST 모드의 글자는 딱 세 군데에 있습니다.
+#
+#    1  languages/*.po      클레이가 정한 정식 번역 파일. 여기 한국어를 넣는 것이
+#                           가장 안전합니다. 코드를 한 줄도 안 건드리니까요.
+#    2  modinfo.lua         모드 목록에 뜨는 이름과 설명.
+#    3  .lua 안의 STRINGS   po 를 안 쓰는 모드는 코드에 글자를 박아 둡니다.
+#
+#  이 세 가지에 해당하는 파일만 담습니다. 나머지는 번역과 무관합니다.
+
+$TEXT_DIRS = @('languages', 'language', 'locales', 'locale', 'lang', 'po', 'strings', 'scripts\languages')
+
+# 이 중 하나라도 들어 있으면 글자를 품은 lua 로 봅니다.
+$TEXT_HINTS = 'STRINGS\.|ChooseTranslationTable|LanguageTranslator|TRANSLATION|GetString\('
+
+# 글자가 어느 나라 말인지 셉니다. 이미 한국어인 모드는 건드릴 필요가 없습니다.
+function Measure-TextScript($text) {
+	$out = [pscustomobject]@{ Hangul = 0; Cjk = 0; Latin = 0 }
+	if ([string]::IsNullOrEmpty($text)) { return $out }
+
+	$out.Hangul = ([regex]::Matches($text, '[가-힣]')).Count
+	$out.Cjk    = ([regex]::Matches($text, '[一-鿿぀-ヿ]')).Count
+	$out.Latin  = ([regex]::Matches($text, '[A-Za-z]')).Count
+	return $out
+}
+
+function Get-DominantScript($score) {
+	if ($score.Hangul -eq 0 -and $score.Cjk -eq 0 -and $score.Latin -eq 0) { return '없음' }
+	if ($score.Hangul -ge $score.Cjk -and $score.Hangul -ge $score.Latin)   { return '한국어' }
+	if ($score.Cjk -ge $score.Latin)                                        { return '중국어/일본어' }
+	return '영어'
+}
+
+# 모드 하나를 훑어 번역 거리를 재고, 담을 파일 목록을 돌려줍니다.
+function Measure-ModText($modPath) {
+	$result = [pscustomobject]@{
+		Files      = New-Object System.Collections.Generic.List[object]
+		PoLangs    = New-Object System.Collections.Generic.List[string]
+		HasKorean  = $false
+		Msgids     = 0
+		LuaStrings = 0
+		Score      = [pscustomobject]@{ Hangul = 0; Cjk = 0; Latin = 0 }
+	}
+
+	$files = @()
+	try { $files = @(Get-ChildItem -LiteralPath $modPath -Recurse -File -ErrorAction SilentlyContinue) } catch { return $result }
+
+	foreach ($f in $files) {
+		if ($f.Length -gt $MAX_FILE_BYTES) { continue }
+
+		$relative = $f.FullName.Substring($modPath.Length).TrimStart('\', '/').Replace('/', '\')
+		$dir      = (Split-Path -Parent $relative)
+		$ext      = $f.Extension.ToLower()
+
+		$inTextDir = $false
+		foreach ($d in $TEXT_DIRS) {
+			if ($dir -eq $d -or $dir -like ($d + '\*') -or $dir -like ('*\' + $d) -or $dir -like ('*\' + $d + '\*')) {
+				$inTextDir = $true; break
+			}
+		}
+
+		$isModinfo = ($relative -eq 'modinfo.lua')
+		$isPo      = ($ext -eq '.po' -or $ext -eq '.pot')
+
+		if (-not ($isModinfo -or $isPo -or $inTextDir) -and $ext -ne '.lua') { continue }
+
+		$text = $null
+		try { $text = [IO.File]::ReadAllText($f.FullName) } catch { continue }
+		if ([string]::IsNullOrEmpty($text)) { continue }
+
+		$keep = $isModinfo -or $isPo -or $inTextDir
+		if (-not $keep -and $ext -eq '.lua' -and $text -match $TEXT_HINTS) { $keep = $true }
+		if (-not $keep) { continue }
+
+		$score = Measure-TextScript $text
+		$result.Score.Hangul = $result.Score.Hangul + $score.Hangul
+		$result.Score.Cjk    = $result.Score.Cjk    + $score.Cjk
+		$result.Score.Latin  = $result.Score.Latin  + $score.Latin
+
+		if ($isPo) {
+			$n = ([regex]::Matches($text, '(?m)^msgid\s')).Count
+			$result.Msgids = $result.Msgids + $n
+
+			$lang = [IO.Path]::GetFileNameWithoutExtension($f.Name).ToLower()
+			if (-not $result.PoLangs.Contains($lang)) { $result.PoLangs.Add($lang) }
+			if ($lang -match '^(ko|kor|korean|ko_kr|kr)$' -or $score.Hangul -gt 50) { $result.HasKorean = $true }
+		} elseif ($ext -eq '.lua') {
+			$result.LuaStrings = $result.LuaStrings + ([regex]::Matches($text, '"[^"\r\n]{2,}"')).Count
+		}
+
+		$result.Files.Add([pscustomobject]@{
+			Source   = $f.FullName
+			Relative = $relative
+			Bytes    = $f.Length
+			Kind     = $(if ($isPo) { 'po' } elseif ($isModinfo) { 'modinfo' } else { 'lua' })
+		})
+	}
+
+	return $result
+}
+
+function Invoke-CollectText($root) {
+	Write-Head '번역할 글자가 든 파일 모으기'
+
+	Write-Host '모드를 찾는 중...'
+	$mods = Get-AllModFolders $root
+
+	if ($mods.Count -eq 0) {
+		Write-Fail '설치된 DST 모드를 하나도 찾지 못했습니다.'
+		Write-Host '  모드가 들어 있는 폴더를 이 파일 위로 드래그해 주세요.'
+		Write-Host ''
+		return
+	}
+
+	$onOff = Get-EnabledMods
+	Write-Ok ('모드 ' + $mods.Count + ' 개. 글자가 든 파일만 골라 담습니다...')
+
+	$stamp   = (Get-Date).ToString('yyyyMMdd_HHmmss')
+	$staging = Join-Path ([IO.Path]::GetTempPath()) ('npchof_text_' + $stamp)
+	New-Item -ItemType Directory -Path $staging -Force | Out-Null
+
+	$rows  = New-Object System.Collections.Generic.List[object]
+	$index = 0
+
+	foreach ($mod in ($mods | Sort-Object Number)) {
+		$index = $index + 1
+		Write-Progress -Activity '글자 찾는 중' -Status $mod.Id -PercentComplete (100 * $index / $mods.Count)
+
+		$info = Read-ModInfo $mod.Path
+		$text = Measure-ModText $mod.Path
+
+		$label = $info.Name
+		if ([string]::IsNullOrWhiteSpace($label)) { $label = 'workshop-' + $mod.Number }
+
+		$on = $null
+		if ($onOff.ContainsKey($mod.Number)) { $on = [bool]$onOff[$mod.Number] }
+
+		$copied = 0
+		$bytes  = 0
+		$dest   = Join-Path $staging ('mod_' + $mod.Number)
+
+		foreach ($f in $text.Files) {
+			$target    = Join-Path $dest $f.Relative
+			$targetDir = Split-Path -Parent $target
+			try {
+				if (-not (Test-Path -LiteralPath $targetDir)) {
+					New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
+				}
+				Copy-Item -LiteralPath $f.Source -Destination $target -Force
+				$copied = $copied + 1
+				$bytes  = $bytes + $f.Bytes
+			} catch { }
+		}
+
+		$rows.Add([pscustomobject]@{
+			Id      = $mod.Number
+			Name    = $label
+			Enabled = $on
+			Lang    = (Get-DominantScript $text.Score)
+			PoLangs = (($text.PoLangs | Sort-Object) -join ',')
+			Korean  = $text.HasKorean
+			Msgids  = $text.Msgids
+			Luas    = $text.LuaStrings
+			Files   = $copied
+			Bytes   = $bytes
+		})
+
+		Write-Host ('  [' + $index + '/' + $mods.Count + '] ' + $label.PadRight(34).Substring(0, [Math]::Min(34, $label.Length)) +
+			'  파일 ' + ([string]$copied).PadLeft(3))
+	}
+	Write-Progress -Activity '글자 찾는 중' -Completed
+
+	# ── 보고서 ─────────────────────────────────────────────────────────────
+	$script:reportLines = New-Object System.Collections.Generic.List[string]
+	Add-Line 'DST 모드 번역 대상'
+	Add-Line ((Get-Date).ToString('yyyy-MM-dd HH:mm:ss'))
+	Add-Line ''
+
+	$on   = @($rows | Where-Object { $_.Enabled -ne $false })
+	$todo = @($on | Where-Object { -not $_.Korean -and $_.Lang -ne '한국어' -and ($_.Msgids -gt 0 -or $_.Luas -gt 0) })
+	$done = @($on | Where-Object { $_.Korean -or $_.Lang -eq '한국어' })
+
+	Add-Line ('  켜져 있는 모드 ' + $on.Count + ' 개 중')
+	Add-Line ('    이미 한국어이거나 한국어 번역 파일이 있는 것 : ' + $done.Count + ' 개')
+	Add-Line ('    번역이 필요한 것                            : ' + $todo.Count + ' 개')
+	Add-Line ''
+	Add-Line '  po = languages 폴더의 정식 번역 파일. 이게 있으면 코드를 안 건드리고'
+	Add-Line '       한국어 po 만 넣으면 됩니다. 가장 안전합니다.'
+	Add-Line '  lua = 코드에 글자가 박혀 있는 경우. 조심해서 고쳐야 합니다.'
+	Add-Line ''
+
+	Add-Line '━━ 번역이 필요한 모드 ━━'
+	Add-Line ''
+	Add-Line ('  ' + 'ID'.PadRight(12) + '언어'.PadRight(12) + 'po항목'.PadLeft(7) + '  ' + 'po언어'.PadRight(22) + '이름')
+	foreach ($r in ($todo | Sort-Object { -$_.Msgids })) {
+		Add-Line ('  ' + $r.Id.PadRight(12) + $r.Lang.PadRight(12) +
+			([string]$r.Msgids).PadLeft(7) + '  ' +
+			$(if ($r.PoLangs) { $r.PoLangs } else { '(po 없음)' }).PadRight(22) + $r.Name)
+	}
+
+	Add-Line ''
+	Add-Line '━━ 손댈 필요 없는 모드 ━━'
+	Add-Line ''
+	foreach ($r in ($done | Sort-Object Name)) {
+		Add-Line ('  ' + $r.Id.PadRight(12) + $r.Name)
+	}
+
+	$off = @($rows | Where-Object { $_.Enabled -eq $false })
+	if ($off.Count -gt 0) {
+		Add-Line ''
+		Add-Line ('━━ 꺼져 있어서 뺀 모드 (' + $off.Count + ' 개) ━━')
+		Add-Line ''
+		foreach ($r in ($off | Sort-Object Name)) { Add-Line ('  ' + $r.Id.PadRight(12) + $r.Name) }
+	}
+
+	[IO.File]::WriteAllText((Join-Path $staging '번역대상.txt'),
+		(Protect-Text (($script:reportLines) -join "`r`n")), (New-Object System.Text.UTF8Encoding($true)))
+
+	# ── 압축 ───────────────────────────────────────────────────────────────
+	$zip = Join-Path $PackageRoot ('DST_번역대상_' + $stamp + '.zip')
+	try {
+		if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
+		Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+		[System.IO.Compression.ZipFile]::CreateFromDirectory($staging, $zip,
+			[System.IO.Compression.CompressionLevel]::Optimal, $false)
+	} catch {
+		Write-Fail ('압축에 실패했습니다: ' + $_.Exception.Message)
+		Write-Host ('  담아 둔 폴더는 여기 있습니다: ' + $staging)
+		return
+	}
+
+	try { Remove-Item -LiteralPath $staging -Recurse -Force } catch { }
+
+	$size = 0
+	try { $size = (Get-Item -LiteralPath $zip).Length } catch { }
+
+	Write-Host ''
+	Write-Host ('저장했습니다: ' + $zip) -ForegroundColor Green
+	Write-Host ('  크기 ' + [math]::Round($size / 1MB, 1) + ' MB') -ForegroundColor Green
+	Write-Host ('  번역이 필요한 모드 ' + $todo.Count + ' 개, 이미 한국어인 모드 ' + $done.Count + ' 개') -ForegroundColor Green
+	Write-Host '  이 zip 을 보내 주시면 번역해서 돌려 드리겠습니다.' -ForegroundColor Green
+	try { Start-Process explorer.exe ('/select,"' + $zip + '"') } catch { }
+	Write-Host ''
+}
+
 if ($env:NPCHOF_DOTSOURCE_ONLY -eq '1') { return }
 
 if ($Action -eq 'diagnose') {
@@ -2345,6 +2593,11 @@ if ($Action -eq 'modcheck') {
 
 if ($Action -eq 'bisect') {
 	Invoke-Bisect $Arg
+	exit 0
+}
+
+if ($Action -eq 'collecttext') {
+	Invoke-CollectText $ModFolder
 	exit 0
 }
 

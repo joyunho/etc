@@ -13,6 +13,7 @@ file for NPC Friends, then assembles the ready-to-run zip:
         lasterror.bat          <- find why the server will not start
         modcheck.bat           <- list which mods collide with which
         bisect.bat             <- halve the mod list until the culprit is found
+        translate.bat          <- collect every mod's text for translating
         README.txt
         files/npc_hof_cooking.lua
         tools/patch.ps1
@@ -311,6 +312,26 @@ NPC Friends 의 왈리 NPC 가 Heap of Foods 를 비롯한 음식 모드의 요�
     한 번도 안 켜 보고 끝납니다.
 
 
+[ 모드를 한국어로 바꾸고 싶을 때 - translate.bat ]
+
+  translate.bat 은 번역할 글자가 든 파일만 골라 담습니다.
+
+  DST 모드의 글자는 딱 세 군데에 있습니다.
+
+    languages/*.po   클레이가 정한 정식 번역 파일. 여기 한국어 po 를 넣는
+                     것이 가장 안전합니다. 코드를 한 줄도 안 건드립니다.
+    modinfo.lua      모드 목록에 뜨는 이름과 설명.
+    .lua 의 STRINGS  po 를 안 쓰는 모드는 코드에 글자를 박아 둡니다.
+
+  이 세 가지만 담고 나머지는 뺍니다. 그래서 collectmods.bat 보다 훨씬
+  작습니다. 같이 들어가는 번역대상.txt 에는 모드마다
+
+    지금 무슨 언어인지 / po 가 있는지 / 한국어 po 가 이미 있는지 /
+    번역할 항목이 몇 개인지
+
+  가 적혀 있고, 이미 한국어인 모드와 꺼 둔 모드는 따로 빼 둡니다.
+
+
 [ 개인정보 ]
 
   collect.bat 과 collectmods.bat 은 계정 이름, 스팀 ID, 토큰처럼 보이는
@@ -338,7 +359,7 @@ def main() -> None:
     )
 
     # cmd.exe wants CRLF; these two are ASCII-only on purpose.
-    for name in ("install.bat", "restore.bat", "diagnose.bat", "collect.bat", "collectmods.bat", "lasterror.bat", "modcheck.bat", "bisect.bat"):
+    for name in ("install.bat", "restore.bat", "diagnose.bat", "collect.bat", "collectmods.bat", "lasterror.bat", "modcheck.bat", "bisect.bat", "translate.bat"):
         text = (PATCH / "templates" / name).read_text(encoding="utf-8")
         text.encode("ascii")  # fail the build if Korean sneaks in
         (BUILD / name).write_bytes(text.replace("\n", "\r\n").encode("ascii"))

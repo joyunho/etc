@@ -407,6 +407,120 @@ foreach ($stray in @('서버오류.txt')) {
 	if (Test-Path -LiteralPath $f) { Remove-Item -LiteralPath $f -Force }
 }
 
+
+Write-Host ''
+Write-Host '=== 11. collecttext picks out text and skips what is already Korean ==='
+
+$tRoot = Join-Path $sandbox 'text'
+$tKlei = Join-Path $sandbox 'textklei/Klei/DoNotStarveTogether/Cluster_1'
+New-Item -ItemType Directory -Force -Path $tKlei | Out-Null
+function Get-KleiRoots { @((Join-Path $sandbox 'textklei/Klei/DoNotStarveTogether')) }
+
+function New-TextMod($id, $info) {
+	$d = Join-Path $tRoot ('workshop-' + $id)
+	New-Item -ItemType Directory -Force -Path $d | Out-Null
+	[IO.File]::WriteAllText((Join-Path $d 'modinfo.lua'), $info, (New-Object Text.UTF8Encoding($false)))
+	return $d
+}
+
+# A Chinese mod that ships proper .po files -- the safe case.
+$m1 = New-TextMod '700000001' "name = `"主线拓展`"`nversion = `"1.0`"`napi_version = 10"
+New-Item -ItemType Directory -Force -Path (Join-Path $m1 'languages') | Out-Null
+[IO.File]::WriteAllText((Join-Path $m1 'languages/chinese.po'),
+	"msgid `"STRINGS.NAMES.CE_WHEAT`"`nmsgstr `"小麦`"`n`nmsgid `"STRINGS.NAMES.CE_BREAD`"`nmsgstr `"面包`"`n",
+	(New-Object Text.UTF8Encoding($false)))
+[IO.File]::WriteAllText((Join-Path $m1 'languages/english.po'),
+	"msgid `"STRINGS.NAMES.CE_WHEAT`"`nmsgstr `"Wheat`"`n`nmsgid `"STRINGS.NAMES.CE_BREAD`"`nmsgstr `"Bread`"`n",
+	(New-Object Text.UTF8Encoding($false)))
+New-Item -ItemType Directory -Force -Path (Join-Path $m1 'anim') | Out-Null
+[IO.File]::WriteAllText((Join-Path (Join-Path $m1 'anim') 'ignored.txt'), 'x')
+
+# An English mod with its text hardcoded in lua -- the risky case.
+$m2 = New-TextMod '700000002' "name = `"Large Chest`"`nversion = `"1.1.1`"`napi_version = 10"
+[IO.File]::WriteAllText((Join-Path $m2 'modmain.lua'),
+	"GLOBAL.STRINGS.NAMES.LARGECHEST = `"Large Chest`"`nGLOBAL.STRINGS.RECIPE_DESC.LARGECHEST = `"Holds more stuff.`"`n",
+	(New-Object Text.UTF8Encoding($false)))
+New-Item -ItemType Directory -Force -Path (Join-Path $m2 'scripts') | Out-Null
+[IO.File]::WriteAllText((Join-Path (Join-Path $m2 'scripts') 'nothing.lua'), 'local x = 1')
+
+# Already Korean -- must be left alone.
+$m3 = New-TextMod '700000003' "name = `"한글화 모드`"`nversion = `"1.0`"`napi_version = 10"
+New-Item -ItemType Directory -Force -Path (Join-Path $m3 'languages') | Out-Null
+[IO.File]::WriteAllText((Join-Path $m3 'languages/korean.po'),
+	"msgid `"STRINGS.NAMES.THING`"`nmsgstr `"물건입니다. 한국어로 적혀 있습니다.`"`n",
+	(New-Object Text.UTF8Encoding($false)))
+
+# Switched off -- must be reported separately, not queued for translation.
+$m4 = New-TextMod '700000004' "name = `"Disabled Mod`"`nversion = `"1.0`"`napi_version = 10"
+[IO.File]::WriteAllText((Join-Path $m4 'modmain.lua'), "GLOBAL.STRINGS.NAMES.X = `"Something`"", (New-Object Text.UTF8Encoding($false)))
+
+[IO.File]::WriteAllText((Join-Path $tKlei 'modoverrides.lua'), @'
+return {
+  ["workshop-700000001"] = { enabled = true },
+  ["workshop-700000002"] = { enabled = true },
+  ["workshop-700000003"] = { enabled = true },
+  ["workshop-700000004"] = { enabled = false },
+}
+'@)
+
+$score = Measure-TextScript '안녕하세요 반갑습니다'
+Check 'Korean text is recognised as Korean' ((Get-DominantScript $score) -eq '한국어')
+Check 'Chinese text is recognised as Chinese' `
+	((Get-DominantScript (Measure-TextScript '小麦面包主线拓展')) -eq '중국어/일본어')
+Check 'English text is recognised as English' `
+	((Get-DominantScript (Measure-TextScript 'Large Chest holds more stuff')) -eq '영어')
+
+$t1 = Measure-ModText $m1
+Check 'po files are collected'          ((@($t1.Files | Where-Object { $_.Kind -eq 'po' })).Count -eq 2)
+Check 'msgid entries are counted'       ($t1.Msgids -eq 4) ("got " + $t1.Msgids)
+Check 'the po languages are listed'     ((($t1.PoLangs | Sort-Object) -join ',') -eq 'chinese,english') `
+	(($t1.PoLangs | Sort-Object) -join ',')
+Check 'a Chinese mod is not marked Korean' (-not $t1.HasKorean)
+
+$t2 = Measure-ModText $m2
+Check 'a lua file holding STRINGS is collected' `
+	((@($t2.Files | Where-Object { $_.Relative -eq 'modmain.lua' })).Count -eq 1)
+Check 'a lua file with no text is skipped' `
+	((@($t2.Files | Where-Object { $_.Relative -like '*nothing.lua' })).Count -eq 0)
+Check 'modinfo.lua is always collected' `
+	((@($t2.Files | Where-Object { $_.Relative -eq 'modinfo.lua' })).Count -eq 1)
+
+$t3 = Measure-ModText $m3
+Check 'a korean.po marks the mod as done' ($t3.HasKorean)
+
+$script:reportLines = New-Object System.Collections.Generic.List[string]
+Invoke-CollectText $tRoot | Out-Null
+$rt = ($script:reportLines -join "`n")
+
+Check 'the Chinese mod is queued for translation' `
+	($rt -match '(?s)번역이 필요한 모드.*700000001')
+Check 'the English mod is queued too' `
+	($rt -match '(?s)번역이 필요한 모드.*700000002')
+Check 'the Korean mod is listed as done' `
+	($rt -match '(?s)손댈 필요 없는 모드.*700000003')
+Check 'the switched-off mod is set aside' `
+	($rt -match '(?s)꺼져 있어서 뺀 모드.*700000004')
+Check 'the report says how many need work' ($rt -match '번역이 필요한 것\s*:\s*2 개')
+
+$zips = @(Get-ChildItem -LiteralPath $package -Filter 'DST_번역대상_*.zip' -ErrorAction SilentlyContinue)
+Check 'a zip was produced' ($zips.Count -ge 1)
+if ($zips.Count -ge 1) {
+	Add-Type -AssemblyName System.IO.Compression.FileSystem
+	$z = [IO.Compression.ZipFile]::OpenRead($zips[0].FullName)
+	try {
+		$entries = @($z.Entries | ForEach-Object { $_.FullName })
+		Check 'the zip carries the report'    (($entries | Where-Object { $_ -like '*번역대상.txt' }).Count -eq 1)
+		Check 'the zip carries the po files'  (($entries | Where-Object { $_ -like '*chinese.po' }).Count -eq 1)
+		Check 'the zip carries the lua text'  (($entries | Where-Object { $_ -like '*mod_700000002/modmain.lua' }).Count -eq 1)
+		Check 'the zip leaves plain code out' (($entries | Where-Object { $_ -like '*nothing.lua' }).Count -eq 0)
+		Check 'zip entries use forward slashes' (($entries | Where-Object { $_ -like '*\*' }).Count -eq 0)
+	} finally { $z.Dispose() }
+	foreach ($zz in $zips) { Remove-Item -LiteralPath $zz.FullName -Force }
+}
+
+Remove-Item -LiteralPath $tRoot -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath (Join-Path $sandbox 'textklei') -Recurse -Force -ErrorAction SilentlyContinue
+
 # ── cleanup ─────────────────────────────────────────────────────────────────
 Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
 foreach ($stray in @('범인모드.txt', 'bisect_state.json')) {
