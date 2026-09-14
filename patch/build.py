@@ -10,6 +10,7 @@ file for NPC Friends, then assembles the ready-to-run zip:
         diagnose.bat           <- dump the current state to 진단결과.txt
         collect.bat            <- pack everything needed for support into one zip
         collectmods.bat        <- pack the code of every installed mod
+        lasterror.bat          <- find why the server will not start
         README.txt
         files/npc_hof_cooking.lua
         tools/patch.ps1
@@ -241,6 +242,16 @@ NPC Friends 의 왈리 NPC 가 Heap of Foods 를 비롯한 음식 모드의 요�
     ...\\steamapps\\workshop\\content\\322330
 
 
+[ 서버가 아예 안 켜질 때 - lasterror.bat ]
+
+  "데디케이티드 서버 시작 실패" 가 뜨면 lasterror.bat 을 더블클릭하세요.
+  가장 최근 로그에서 진짜 오류 줄만 찾아 앞뒤 문맥까지 같이 뽑아
+  서버오류.txt 로 저장하고, 화면에도 그대로 보여 줍니다.
+
+  거의 항상 원인은 모드 하나입니다. 오류 줄에 나오는
+  workshop-<숫자> 가 범인이고, 그 모드를 끄면 켜집니다.
+
+
 [ 개인정보 ]
 
   collect.bat 과 collectmods.bat 은 계정 이름, 스팀 ID, 토큰처럼 보이는
@@ -268,7 +279,7 @@ def main() -> None:
     )
 
     # cmd.exe wants CRLF; these two are ASCII-only on purpose.
-    for name in ("install.bat", "restore.bat", "diagnose.bat", "collect.bat", "collectmods.bat"):
+    for name in ("install.bat", "restore.bat", "diagnose.bat", "collect.bat", "collectmods.bat", "lasterror.bat"):
         text = (PATCH / "templates" / name).read_text(encoding="utf-8")
         text.encode("ascii")  # fail the build if Korean sneaks in
         (BUILD / name).write_bytes(text.replace("\n", "\r\n").encode("ascii"))

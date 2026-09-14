@@ -14,7 +14,7 @@
 #   Windows PowerShell 5.1 (윈도우 기본 내장) 에서 동작하도록 작성했습니다.
 
 param(
-	[ValidateSet('install', 'restore', 'diagnose', 'collect', 'collectmods')]
+	[ValidateSet('install', 'restore', 'diagnose', 'collect', 'collectmods', 'lasterror')]
 	[string]$Action = 'install',
 
 	# 자동 탐색이 실패할 때 폴더를 직접 지정할 수 있습니다.
@@ -931,6 +931,144 @@ function Invoke-CollectMods($root) {
 	try { Start-Process explorer.exe ('/select,"' + $zip + '"') } catch { }
 }
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  서버가 안 켜질 때 - 로그에서 오류만 뽑아내기
+# ══════════════════════════════════════════════════════════════════════════════
+#
+#  "데디케이티드 서버 시작 실패" 창은 이유를 알려주지 않습니다. 이유는 로그에
+#  그대로 찍혀 있고, 보통 파일 맨 아래쪽입니다.
+
+# 오류 한 건의 시작을 알리는 표시들.
+$ERROR_MARKERS = @(
+	'\[string "',
+	'stack traceback',
+	'^\s*Error',
+	'LUA ERROR',
+	'attempt to (index|call|compare|perform|concatenate)',
+	'Assert failure',
+	'SCRIPT ERROR',
+	'Mod: .*Error',
+	'DoLuaFile',
+	'Failed to load',
+	'unexpected symbol',
+	"'end' expected",
+	'caused an error'
+)
+
+function Invoke-LastError {
+	Write-Head '서버가 안 켜지는 이유 찾기'
+
+	$logs = @(Get-DstLogs)
+
+	# 백업본(server_log_2026-..-...txt)까지 같이 봅니다.
+	foreach ($root in (Get-KleiRoots)) {
+		try {
+			foreach ($f in (Get-ChildItem -LiteralPath $root -Recurse -File -ErrorAction SilentlyContinue |
+					Where-Object { $_.Name -like '*log*.txt' })) {
+				if ($logs -notcontains $f.FullName) { $logs += $f.FullName }
+			}
+		} catch { }
+	}
+
+	if ($logs.Count -eq 0) {
+		Write-Fail 'DST 로그 파일을 찾지 못했습니다.'
+		Write-Host ('  보통 여기 있습니다: ' + (Join-Path $env:USERPROFILE 'Documents\Klei\DoNotStarveTogether'))
+		Write-Host ''
+		return
+	}
+
+	# 최근에 쓰인 것부터
+	$ordered = @()
+	try {
+		$ordered = @(Get-ChildItem -LiteralPath $logs -ErrorAction SilentlyContinue |
+			Sort-Object LastWriteTime -Descending | Select-Object -First 8)
+	} catch {
+		$ordered = @()
+	}
+
+	if ($ordered.Count -eq 0) {
+		Write-Fail '로그 파일을 읽지 못했습니다.'
+		return
+	}
+
+	$out = New-Object System.Collections.Generic.List[string]
+	$out.Add('DST 서버 오류 찾기')
+	$out.Add((Get-Date).ToString('yyyy-MM-dd HH:mm:ss'))
+	$out.Add('')
+
+	$pattern = ($ERROR_MARKERS -join '|')
+	$anyFound = $false
+
+	foreach ($log in $ordered) {
+		$lines = @()
+		try { $lines = [IO.File]::ReadAllLines($log.FullName) } catch { continue }
+		if ($lines.Length -eq 0) { continue }
+
+		$hits = @()
+		for ($i = 0; $i -lt $lines.Length; $i++) {
+			if ($lines[$i] -match $pattern) { $hits += $i }
+		}
+
+		$header = ('--- ' + $log.Name + '   (' + $log.LastWriteTime.ToString('MM-dd HH:mm') +
+			', ' + $lines.Length + ' 줄)')
+
+		if ($hits.Count -eq 0) {
+			$out.Add($header + '  -> 오류 없음')
+			$out.Add('')
+			continue
+		}
+
+		$anyFound = $true
+		$out.Add($header + '  -> 오류로 보이는 줄 ' + $hits.Count + ' 개')
+		$out.Add('')
+
+		# 마지막 오류 주변을 넉넉히. 시작 실패의 이유는 거의 항상 마지막에 있습니다.
+		$start = [Math]::Max(0, $hits[$hits.Count - 1] - 25)
+		$end   = [Math]::Min($lines.Length - 1, $hits[$hits.Count - 1] + 40)
+
+		$out.Add('   ── 마지막 오류 부근 ──')
+		for ($i = $start; $i -le $end; $i++) {
+			$out.Add('   ' + $lines[$i])
+		}
+		$out.Add('')
+
+		# 마지막 20줄도. 시작이 끊긴 지점이 여기 드러납니다.
+		$out.Add('   ── 로그 마지막 20줄 ──')
+		for ($i = [Math]::Max(0, $lines.Length - 20); $i -lt $lines.Length; $i++) {
+			$out.Add('   ' + $lines[$i])
+		}
+		$out.Add('')
+
+		Write-Host ''
+		Write-Host ('  ' + $log.Name) -ForegroundColor Yellow
+		foreach ($i in ($hits | Select-Object -Last 3)) {
+			Write-Host ('    ' + $lines[$i].Trim()) -ForegroundColor Red
+		}
+	}
+
+	if (-not $anyFound) {
+		Write-Host ''
+		Write-Warn '로그에서 오류 같은 줄을 찾지 못했습니다.'
+		Write-Host '  서버를 한 번 더 켜 보신 뒤 이 파일을 다시 실행해 주세요.'
+	}
+
+	$file = Join-Path $PackageRoot '서버오류.txt'
+	try {
+		[IO.File]::WriteAllText($file, (Protect-Text ($out -join "`r`n")), (New-Object System.Text.UTF8Encoding($true)))
+		Write-Host ''
+		Write-Host ('저장했습니다: ' + $file) -ForegroundColor Green
+		Write-Host '이 파일을 보내 주시면 원인을 찾아 드리겠습니다.' -ForegroundColor Green
+		try { Start-Process notepad.exe $file } catch { }
+	} catch {
+		Write-Fail ('저장하지 못했습니다: ' + $_.Exception.Message)
+	}
+
+	Write-Host ''
+	Write-Host '  바로 되돌리시려면 restore.bat 을 실행하세요.'
+	Write-Host ''
+}
+
 if ($env:NPCHOF_DOTSOURCE_ONLY -eq '1') { return }
 
 if ($Action -eq 'diagnose') {
@@ -945,6 +1083,11 @@ if ($Action -eq 'collect') {
 
 if ($Action -eq 'collectmods') {
 	Invoke-CollectMods
+	exit 0
+}
+
+if ($Action -eq 'lasterror') {
+	Invoke-LastError
 	exit 0
 }
 
