@@ -12,6 +12,7 @@ file for NPC Friends, then assembles the ready-to-run zip:
         collectmods.bat        <- pack the code of every installed mod
         lasterror.bat          <- find why the server will not start
         modcheck.bat           <- list which mods collide with which
+        bisect.bat             <- halve the mod list until the culprit is found
         README.txt
         files/npc_hof_cooking.lua
         tools/patch.ps1
@@ -284,6 +285,32 @@ NPC Friends 의 왈리 NPC 가 Heap of Foods 를 비롯한 음식 모드의 요�
   workshop-<숫자> 가 범인이고, 그 모드를 끄면 켜집니다.
 
 
+[ 서버가 안 켜지는데 로그로도 모르겠을 때 - bisect.bat ]
+
+  로그가 모드 이름을 안 찍어 주는 경우가 있습니다. 그때 씁니다.
+
+  켜져 있는 모드를 절반씩 잘라 가며, 어느 쪽에 범인이 있는지 좁힙니다.
+  모드 48 개면 48 번이 아니라 열 번 안쪽이면 끝납니다. 두 모드가 "같이
+  켜져 있을 때만" 터지는 경우도 찾습니다 (그건 스무 번쯤 걸립니다).
+
+  쓰는 법은 이것뿐입니다:
+
+    1  bisect.bat 실행
+    2  서버를 켜 본다 (켜지든 안 켜지든 상관없음)
+    3  bisect.bat 다시 실행
+    4  범인 이름이 나올 때까지 2~3 반복
+
+  bisect.bat 이 modoverrides.lua 를 고쳐서 모드를 껐다 켰다 합니다.
+  시작할 때 원본을 백업해 두고, 끝나면 그대로 되돌립니다.
+  중간에 그만두시려면 bisect.bat stop 을 실행하세요. 바로 되돌립니다.
+
+  * 데디케이티드 서버(클러스터 폴더)에서만 씁니다.
+  * 도중에 게임 안 모드 화면에서 모드를 건드리면 그 화면이 modoverrides.lua 를
+    덮어씁니다. 찾는 동안에는 건드리지 마세요.
+  * 먼저 lasterror.bat 을 돌려 보세요. 로그가 이미 범인을 찍어 줬다면
+    한 번도 안 켜 보고 끝납니다.
+
+
 [ 개인정보 ]
 
   collect.bat 과 collectmods.bat 은 계정 이름, 스팀 ID, 토큰처럼 보이는
@@ -311,7 +338,7 @@ def main() -> None:
     )
 
     # cmd.exe wants CRLF; these two are ASCII-only on purpose.
-    for name in ("install.bat", "restore.bat", "diagnose.bat", "collect.bat", "collectmods.bat", "lasterror.bat", "modcheck.bat"):
+    for name in ("install.bat", "restore.bat", "diagnose.bat", "collect.bat", "collectmods.bat", "lasterror.bat", "modcheck.bat", "bisect.bat"):
         text = (PATCH / "templates" / name).read_text(encoding="utf-8")
         text.encode("ascii")  # fail the build if Korean sneaks in
         (BUILD / name).write_bytes(text.replace("\n", "\r\n").encode("ascii"))

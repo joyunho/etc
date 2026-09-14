@@ -14,12 +14,15 @@
 #   Windows PowerShell 5.1 (윈도우 기본 내장) 에서 동작하도록 작성했습니다.
 
 param(
-	[ValidateSet('install', 'restore', 'diagnose', 'collect', 'collectmods', 'lasterror', 'modcheck')]
+	[ValidateSet('install', 'restore', 'diagnose', 'collect', 'collectmods', 'lasterror', 'modcheck', 'bisect')]
 	[string]$Action = 'install',
 
 	# 자동 탐색이 실패할 때 폴더를 직접 지정할 수 있습니다.
 	#   collect.bat "D:\Steam\steamapps\workshop\content\322330\3684000581"
-	[string]$ModFolder = ''
+	[string]$ModFolder = '',
+
+	# bisect 에서만 씁니다: stop 을 주면 모드 설정을 원래대로 되돌립니다.
+	[string]$Arg = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -1628,6 +1631,478 @@ function Invoke-ModCheck($root) {
 	Write-Host ''
 }
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  서버가 안 켜질 때 - 범인 모드를 반씩 잘라서 찾아내기
+# ══════════════════════════════════════════════════════════════════════════════
+#
+#  모드 48 개를 하나씩 꺼 보면 48 번을 켜 봐야 합니다. 절반씩 자르면 6 번이면
+#  끝납니다. 두 모드가 "같이 있을 때만" 터지는 경우도 찾아냅니다.
+#
+#  방식:
+#    지금 "반드시 켜 두는 묶음"(Required)과 "범인이 이 안에 있는 묶음"(Pool)을
+#    들고 다닙니다. 둘을 합치면 언제나 안 켜지는 조합입니다.
+#      - Pool 을 반으로 잘라 앞쪽만 켜 본다. 안 켜지면 뒤쪽은 버린다.
+#      - 뒤쪽만 켜 본다. 안 켜지면 앞쪽을 버린다.
+#      - 둘 다 켜지면 두 모드가 "같이 있을 때만" 터지는 경우다.
+#        앞쪽을 Required 로 옮기고 뒤쪽을 계속 좁힌다.
+#    Pool 이 하나로 줄면 그 모드는 범인 중 하나가 확정입니다. 그러면 Required 와
+#    Pool 을 맞바꿔서, 이번에는 나머지 쪽을 같은 방법으로 좁힙니다. 더 줄지 않으면
+#    끝입니다. 모드 48 개면 한 개짜리 원인은 열 번 안쪽, 두 개가 얽힌 경우도
+#    스물몇 번이면 나옵니다.
+#
+#  건드리는 파일은 modoverrides.lua 뿐이고, 시작할 때 원본을 백업해 두었다가
+#  끝나거나 중단하면 그대로 되돌립니다.
+
+# 시작이 실패했다는 표시. 하나라도 있으면 실패로 봅니다.
+$BOOT_FAIL = @(
+	'Failed mSimulation->Reset\(\)',
+	'Error during game initialization',
+	'DoLuaFile Error',
+	'Error loading main\.lua',
+	'MOD ERROR'
+)
+
+# 시뮬레이션이 실제로 돌기 시작했다는 표시.
+$BOOT_OK = @(
+	'Sim paused',
+	'Starting master server',
+	'Starting up',
+	'Reconstructing topology',
+	'\[Shard\].*Ready'
+)
+
+function Get-ModoverrideFiles {
+	$files = New-Object System.Collections.Generic.List[string]
+
+	foreach ($root in (Get-KleiRoots)) {
+		try {
+			foreach ($f in (Get-ChildItem -LiteralPath $root -Recurse -File -Filter 'modoverrides.lua' -ErrorAction SilentlyContinue)) {
+				if (-not $files.Contains($f.FullName)) { $files.Add($f.FullName) }
+			}
+		} catch { }
+	}
+
+	return $files
+}
+
+# 한 모드 블록의 범위: ["workshop-123"] = { 부터 다음 ["workshop- 직전까지.
+function Split-ModBlocks($text) {
+	$blocks = New-Object System.Collections.Generic.List[object]
+
+	$starts = [regex]::Matches($text, '\[\s*"workshop-(\d+)"\s*\]\s*=\s*\{')
+	for ($i = 0; $i -lt $starts.Count; $i++) {
+		$from = $starts[$i].Index
+		$to   = $(if ($i + 1 -lt $starts.Count) { $starts[$i + 1].Index } else { $text.Length })
+		$blocks.Add([pscustomobject]@{
+			Id     = $starts[$i].Groups[1].Value
+			Start  = $from
+			Length = $to - $from
+			Open   = $starts[$i].Index + $starts[$i].Length
+		})
+	}
+
+	return $blocks
+}
+
+function Get-EnabledFromFiles($files) {
+	$ids = New-Object System.Collections.Generic.List[string]
+
+	foreach ($file in $files) {
+		$text = $null
+		try { $text = [IO.File]::ReadAllText($file) } catch { continue }
+		if ([string]::IsNullOrEmpty($text)) { continue }
+
+		foreach ($b in (Split-ModBlocks $text)) {
+			$body = $text.Substring($b.Start, $b.Length)
+			$on   = $true
+			$m    = [regex]::Match($body, 'enabled\s*=\s*(true|false)')
+			if ($m.Success) { $on = ($m.Groups[1].Value -eq 'true') }
+			if ($on -and -not $ids.Contains($b.Id)) { $ids.Add($b.Id) }
+		}
+	}
+
+	return $ids
+}
+
+# $allowed 에 든 모드만 켜고 나머지는 끕니다. 설정값(configuration_options)은
+# 그대로 두고 enabled 한 글자만 바꿉니다.
+function Set-EnabledMods($files, $allowed) {
+	foreach ($file in $files) {
+		$text = $null
+		try { $text = [IO.File]::ReadAllText($file) } catch { continue }
+		if ([string]::IsNullOrEmpty($text)) { continue }
+
+		# 뒤에서부터 고쳐야 앞 블록의 위치가 안 밀립니다.
+		$blocks = @(Split-ModBlocks $text)
+		for ($i = $blocks.Count - 1; $i -ge 0; $i--) {
+			$b    = $blocks[$i]
+			$want = $(if ($allowed -contains $b.Id) { 'true' } else { 'false' })
+			$body = $text.Substring($b.Start, $b.Length)
+
+			$m = [regex]::Match($body, 'enabled(\s*)=(\s*)(true|false)')
+			if ($m.Success) {
+				$fixed = $body.Remove($m.Index, $m.Length).Insert($m.Index,
+					('enabled' + $m.Groups[1].Value + '=' + $m.Groups[2].Value + $want))
+				$text = $text.Remove($b.Start, $b.Length).Insert($b.Start, $fixed)
+			} else {
+				# enabled 키가 아예 없으면 여는 중괄호 바로 뒤에 넣습니다.
+				$at   = $b.Open - $b.Start
+				$fixed = $body.Insert($at, (' enabled = ' + $want + ','))
+				$text  = $text.Remove($b.Start, $b.Length).Insert($b.Start, $fixed)
+			}
+		}
+
+		try { [IO.File]::WriteAllText($file, $text, (New-Object System.Text.UTF8Encoding($false))) }
+		catch { Write-Fail ('modoverrides.lua 를 고치지 못했습니다: ' + $file) }
+	}
+}
+
+# 마지막으로 켜 본 결과를 로그에서 읽습니다.
+#   $since 이후에 쓰인 로그가 없으면 $null (아직 안 켜 봤다는 뜻).
+function Read-BootResult($since) {
+	$paths = @(Get-DstLogs)
+	foreach ($root in (Get-KleiRoots)) {
+		try {
+			foreach ($f in (Get-ChildItem -LiteralPath $root -Recurse -File -ErrorAction SilentlyContinue |
+					Where-Object { $_.Name -like '*log*.txt' })) {
+				if ($paths -notcontains $f.FullName) { $paths += $f.FullName }
+			}
+		} catch { }
+	}
+	if ($paths.Count -eq 0) { return $null }
+
+	$fresh = @()
+	try {
+		$fresh = @(Get-ChildItem -LiteralPath $paths -ErrorAction SilentlyContinue |
+			Where-Object { $_.LastWriteTime -gt $since } |
+			Sort-Object LastWriteTime -Descending | Select-Object -First 4)
+	} catch { return $null }
+
+	if ($fresh.Count -eq 0) { return $null }
+
+	$sawOk = $false
+	foreach ($f in $fresh) {
+		$text = $null
+		try { $text = [IO.File]::ReadAllText($f.FullName) } catch { continue }
+		if ([string]::IsNullOrEmpty($text)) { continue }
+
+		foreach ($p in $BOOT_FAIL) {
+			if ($text -match $p) {
+				return [pscustomobject]@{ Ok = $false; Log = $f.FullName; Why = $p }
+			}
+		}
+		foreach ($p in $BOOT_OK) { if ($text -match $p) { $sawOk = $true } }
+	}
+
+	if ($sawOk) { return [pscustomobject]@{ Ok = $true; Log = $fresh[0].FullName; Why = '' } }
+
+	# 새 로그는 있는데 성공도 실패도 아니면 판단하지 않습니다.
+	return $null
+}
+
+$BISECT_STATE = 'bisect_state.json'
+$BISECT_BACK  = '_bisect_backup'
+
+function Get-BisectPaths {
+	return [pscustomobject]@{
+		State  = (Join-Path $PackageRoot $BISECT_STATE)
+		Backup = (Join-Path $PackageRoot $BISECT_BACK)
+	}
+}
+
+function Save-BisectState($state) {
+	$p = Get-BisectPaths
+	$state | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $p.State -Encoding UTF8
+}
+
+function Read-BisectState {
+	$p = Get-BisectPaths
+	if (-not (Test-Path -LiteralPath $p.State)) { return $null }
+	try { return (Get-Content -LiteralPath $p.State -Raw | ConvertFrom-Json) } catch { return $null }
+}
+
+function Restore-Bisect($state) {
+	$p = Get-BisectPaths
+	$n = 0
+
+	if ($state -ne $null -and $state.Files -ne $null) {
+		foreach ($pair in $state.Files) {
+			try {
+				if (Test-Path -LiteralPath $pair.Backup) {
+					Copy-Item -LiteralPath $pair.Backup -Destination $pair.Path -Force
+					$n++
+				}
+			} catch { Write-Fail ('되돌리지 못했습니다: ' + $pair.Path) }
+		}
+	}
+
+	try { if (Test-Path -LiteralPath $p.Backup) { Remove-Item -LiteralPath $p.Backup -Recurse -Force } } catch { }
+	try { if (Test-Path -LiteralPath $p.State)  { Remove-Item -LiteralPath $p.State -Force } } catch { }
+
+	return $n
+}
+
+# c 를 n 조각으로 자른 것 중 $i 번째.
+function Get-Chunk($c, $n, $i) {
+	$all  = @($c)
+	$size = [Math]::Ceiling($all.Count / [double]$n)
+	$from = [int]($i * $size)
+	if ($from -ge $all.Count) { return @() }
+	$to = [Math]::Min($all.Count - 1, [int]($from + $size - 1))
+	return @($all[$from..$to])
+}
+
+function Show-BisectPlan($state, $allowed, $names) {
+	$all = @($state.Original)
+	Add-Line ''
+	Add-Line ('━━ ' + $state.Round + ' 번째 시도 ━━')
+	Add-Line ''
+	Add-Line ('  모드 ' + $all.Count + ' 개 중 ' + (@($allowed)).Count + ' 개만 켰습니다.')
+
+	$left = @($state.Pool).Count
+	if ($left -gt 1) {
+		$more = [Math]::Ceiling([Math]::Log($left, 2)) * 2
+		Add-Line ('  아직 범인 후보 ' + $left + ' 개. 앞으로 ' + $more + ' 번쯤이면 끝납니다.')
+	}
+
+	if ((@($allowed)).Count -le 12) {
+		Add-Line ''
+		Add-Line '  켜 놓은 것:'
+		foreach ($id in $allowed) {
+			$nm = $(if ($names.ContainsKey($id)) { $names[$id] } else { '' })
+			Add-Line ('    workshop-' + $id.PadRight(12) + ' ' + $nm)
+		}
+	}
+
+	Add-Line ''
+	Add-Line '  >> 이제 서버를 켜 보세요. 켜지든 안 켜지든 상관없습니다.'
+	Add-Line '     결과가 나오면 bisect.bat 을 다시 실행하시면 됩니다.'
+	Add-Line ''
+	Add-Line '  (그만두시려면: bisect.bat stop  - 모드 설정을 원래대로 되돌립니다)'
+}
+
+function Invoke-Bisect($arg) {
+	Write-Head '안 켜지는 원인 모드 찾기'
+
+	$script:reportLines = New-Object System.Collections.Generic.List[string]
+	$paths = Get-BisectPaths
+	$state = Read-BisectState
+
+	if ($arg -match '^(stop|reset|restore|취소|중단)$') {
+		$n = Restore-Bisect $state
+		Write-Ok ('모드 설정 ' + $n + ' 개를 원래대로 되돌렸습니다.')
+		Write-Host ''
+		return
+	}
+
+	$fromLog = Get-ModBlameFromLogs
+	$names   = $fromLog.Names
+
+	# ── 처음 실행 ─────────────────────────────────────────────────────────
+	if ($state -eq $null) {
+		$files = @(Get-ModoverrideFiles)
+		if ($files.Count -eq 0) {
+			Write-Fail 'modoverrides.lua 를 찾지 못했습니다.'
+			Write-Host '  이 도구는 데디케이티드 서버(클러스터 폴더)에서만 씁니다.'
+			Write-Host ('  보통 여기입니다: ' + (Join-Path $env:USERPROFILE 'Documents\Klei\DoNotStarveTogether\Cluster_1'))
+			Write-Host ''
+			return
+		}
+
+		$enabled = @(Get-EnabledFromFiles $files)
+		if ($enabled.Count -lt 2) {
+			Write-Fail ('켜져 있는 모드가 ' + $enabled.Count + ' 개뿐입니다. 자를 것이 없습니다.')
+			Write-Host ''
+			return
+		}
+
+		# 먼저 로그가 이미 답을 알고 있는지 봅니다. 그러면 한 번도 안 켜 봐도 됩니다.
+		$named = @($fromLog.Blame.Keys | Where-Object { $fromLog.Blame[$_] -contains '로그에 MOD ERROR 로 찍힘' })
+		if ($named.Count -gt 0) {
+			Add-Line ''
+			Add-Line '  시작하기 전에: 로그가 이미 이 모드를 지목하고 있습니다.'
+			foreach ($id in $named) {
+				$nm = $(if ($names.ContainsKey($id)) { $names[$id] } else { '' })
+				Add-Line ('    workshop-' + $id.PadRight(12) + ' ' + $nm)
+			}
+			Add-Line '  이것부터 꺼 보시고, 그래도 안 켜지면 아래를 계속하세요.'
+			Add-Line ''
+		}
+
+		New-Item -ItemType Directory -Force -Path $paths.Backup | Out-Null
+		$pairs = New-Object System.Collections.Generic.List[object]
+		$i = 0
+		foreach ($f in $files) {
+			$i++
+			$bk = Join-Path $paths.Backup ('modoverrides_' + $i + '.lua')
+			Copy-Item -LiteralPath $f -Destination $bk -Force
+			$pairs.Add([pscustomobject]@{ Path = $f; Backup = $bk })
+		}
+
+		$state = [pscustomobject]@{
+			Files    = $pairs
+			Original = $enabled
+			Required = @()
+			Pool     = $enabled
+			Half     = @()
+			Best     = 0
+			Phase    = 'confirm'
+			Pending  = $enabled
+			Round    = 1
+			Stamp    = (Get-Date).AddSeconds(-2).ToString('o')
+		}
+
+		Add-Line ('  켜져 있는 모드 ' + $enabled.Count + ' 개를 찾았습니다.')
+		Add-Line '  원래 설정은 백업해 두었습니다. 끝나거나 bisect.bat stop 을 하면 되돌립니다.'
+		Add-Line ''
+		Add-Line '  먼저 지금 이대로 한 번 켜 보겠습니다. 제가 로그를 제대로 읽는지'
+		Add-Line '  확인하는 단계입니다. 모드는 아직 아무것도 건드리지 않았습니다.'
+		Add-Line ''
+		Add-Line '  >> 서버를 켜 보시고, 실패하면 bisect.bat 을 다시 실행하세요.'
+		Add-Line ''
+
+		$state.Stamp = (Get-Date).ToString('o')
+		Save-BisectState $state
+		Write-Host ''
+		return
+	}
+
+	# ── 지난번 결과 읽기 ──────────────────────────────────────────────────
+	$since  = [DateTime]::Parse($state.Stamp)
+	$result = Read-BootResult $since
+
+	if ($result -eq $null) {
+		Write-Warn '지난번 이후에 새로 쓰인 서버 로그가 없습니다.'
+		Write-Host '  서버를 한 번 켜 보신 다음에 다시 실행해 주세요.'
+		Write-Host '  (켜 보셨는데도 이 말이 나오면, 로그가 성공인지 실패인지 분명하지 않은 경우입니다.'
+		Write-Host '   lasterror.bat 으로 로그를 직접 보세요.)'
+		Write-Host ''
+		return
+	}
+
+	if ($result.Ok) { Write-Ok  '지난번 조합은 켜졌습니다.' }
+	else            { Write-Fail '지난번 조합은 안 켜졌습니다.' }
+
+	$required = @($state.Required)
+	$pool     = @($state.Pool)
+	$phase    = [string]$state.Phase
+	$half     = @($state.Half)
+	$best     = [int]$state.Best
+	$done     = $false
+
+	if ($phase -eq 'confirm') {
+		if ($result.Ok) {
+			Add-Line ''
+			Add-Line '  지금 이대로도 서버가 켜집니다. 찾을 것이 없습니다.'
+			Add-Line '  (아까는 안 켜졌다면, 그 사이에 스팀이 모드를 업데이트했을 수 있습니다.)'
+			$null = Restore-Bisect $state
+			Write-Host ''
+			return
+		}
+		$phase = 'firstHalf'
+	}
+	elseif ($phase -eq 'firstHalf') {
+		if (-not $result.Ok) {
+			# 앞쪽만 켜도 안 켜진다 -> 뒤쪽은 버려도 된다
+			$pool  = $half
+			$phase = 'firstHalf'
+		} else {
+			$phase = 'secondHalf'
+		}
+	}
+	elseif ($phase -eq 'secondHalf') {
+		$rest = @($pool | Where-Object { $half -notcontains $_ })
+		if (-not $result.Ok) {
+			$pool = $rest
+		} else {
+			# 어느 쪽만으로도 안 터진다 -> 둘에 걸쳐 있다.
+			# 앞쪽을 붙박이로 두고 뒤쪽을 계속 좁힙니다.
+			$required = @($required + $half)
+			$pool     = $rest
+		}
+		$phase = 'firstHalf'
+	}
+
+	# Pool 이 하나로 줄면 그 모드는 확정입니다. 이제 반대쪽을 좁힙니다.
+	while ($pool.Count -le 1 -and -not $done) {
+		$total = $required.Count + $pool.Count
+
+		if ($required.Count -eq 0) { $done = $true; break }
+		if ($best -gt 0 -and $total -ge $best) { $done = $true; break }
+
+		$best     = $total
+		$swap     = $required
+		$required = $pool
+		$pool     = $swap
+		$phase    = 'firstHalf'
+	}
+
+	# ── 찾았으면 여기서 끝 ────────────────────────────────────────────────
+	if ($done) {
+		$answer = @($required + $pool)
+
+		Add-Line ''
+		Add-Line '━━ 찾았습니다 ━━'
+		Add-Line ''
+		if ($answer.Count -eq 1) {
+			Add-Line '  이 모드 하나 때문입니다:'
+		} else {
+			Add-Line ('  이 ' + $answer.Count + ' 개가 같이 켜져 있으면 서버가 안 켜집니다.')
+			Add-Line '  하나만 꺼도 켜집니다. 어느 것을 끌지는 취향입니다.'
+		}
+		Add-Line ''
+		foreach ($id in $answer) {
+			$nm = $(if ($names.ContainsKey($id)) { $names[$id] } else { '' })
+			Add-Line ('    workshop-' + $id.PadRight(12) + ' ' + $nm)
+		}
+		Add-Line ''
+
+		$back = Restore-Bisect $state
+		Add-Line ('  모드 설정 ' + $back + ' 개를 원래대로 되돌렸습니다.')
+		Add-Line '  이제 위 모드를 게임 안에서 끄시면 됩니다.'
+		Add-Line ''
+
+		$file = Join-Path $PackageRoot '범인모드.txt'
+		try {
+			[IO.File]::WriteAllText($file, (Protect-Text (($script:reportLines) -join "`r`n")),
+				(New-Object System.Text.UTF8Encoding($true)))
+			Write-Host ('저장했습니다: ' + $file) -ForegroundColor Green
+			try { Start-Process notepad.exe $file } catch { }
+		} catch { }
+
+		Write-Host ''
+		return
+	}
+
+	# ── 다음 조합 ─────────────────────────────────────────────────────────
+	if ($phase -eq 'firstHalf') {
+		$cut  = [Math]::Max(1, [int][Math]::Floor($pool.Count / 2))
+		$half = @($pool[0..($cut - 1)])
+	}
+	# secondHalf 는 방금 쓴 $half 를 그대로 씁니다.
+
+	if ($phase -eq 'firstHalf') {
+		$allowed = @($required + $half)
+	} else {
+		$allowed = @($required + @($pool | Where-Object { $half -notcontains $_ }))
+	}
+
+	Set-EnabledMods ($state.Files | ForEach-Object { $_.Path }) $allowed
+
+	$state.Required = $required
+	$state.Pool     = $pool
+	$state.Half     = $half
+	$state.Best     = $best
+	$state.Phase    = $phase
+	$state.Pending  = $allowed
+	$state.Round   = [int]$state.Round + 1
+	$state.Stamp   = (Get-Date).ToString('o')
+
+	Show-BisectPlan $state $allowed $names
+	Save-BisectState $state
+	Write-Host ''
+}
+
 if ($env:NPCHOF_DOTSOURCE_ONLY -eq '1') { return }
 
 if ($Action -eq 'diagnose') {
@@ -1652,6 +2127,11 @@ if ($Action -eq 'lasterror') {
 
 if ($Action -eq 'modcheck') {
 	Invoke-ModCheck $ModFolder
+	exit 0
+}
+
+if ($Action -eq 'bisect') {
+	Invoke-Bisect $Arg
 	exit 0
 }
 

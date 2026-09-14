@@ -55,6 +55,15 @@ else
 	bad "tests/test_patcher.ps1"
 fi
 
+step "Bisect tests (simulated server)"
+if ! command -v "$PWSH" >/dev/null 2>&1; then
+	printf '   \033[33mSKIP\033[0m pwsh not installed\n'
+elif "$PWSH" -NoProfile -File tests/test_bisect.ps1; then
+	ok "tests/test_bisect.ps1"
+else
+	bad "tests/test_bisect.ps1"
+fi
+
 printf '\n'
 if [ "$fail" -eq 0 ]; then
 	printf '\033[32mALL GREEN\033[0m\n'
