@@ -1067,6 +1067,31 @@ $CLEAN_EXIT = @(
 	'HttpClient2 discarded'
 )
 
+# 로그가 Lua 오류 없이 끊기면 대개 "모드 하나가 나쁘다"가 아니라 "다 합쳐서
+# 너무 무겁다" 입니다. 그럴 때 무엇을 빼야 할지 알려면 어느 모드가 얼마나
+# 많은 것을 등록했는지 봐야 합니다. 로그에 그대로 적혀 있습니다.
+function Measure-ModWeight($lines) {
+	$count = @{}
+	$name  = @{}
+
+	foreach ($line in $lines) {
+		$m = [regex]::Match($line, 'Mod:\s*workshop-(\d+)\s*\(([^)]*)\)')
+		if (-not $m.Success) { continue }
+
+		$id = $m.Groups[1].Value
+		if (-not $count.ContainsKey($id)) { $count[$id] = 0 }
+		$count[$id] = $count[$id] + 1
+		if (-not $name.ContainsKey($id)) { $name[$id] = $m.Groups[2].Value.Trim() }
+	}
+
+	$rows = New-Object System.Collections.Generic.List[object]
+	foreach ($id in $count.Keys) {
+		$rows.Add([pscustomobject]@{ Id = $id; Name = $name[$id]; Lines = $count[$id] })
+	}
+
+	return ($rows | Sort-Object { -$_.Lines })
+}
+
 function Invoke-LastError {
 	Write-Head '서버가 안 켜지는 이유 찾기'
 
@@ -1134,7 +1159,10 @@ function Invoke-LastError {
 			}
 		}
 
-		$header = ('--- ' + $log.Name + '   (' + $log.LastWriteTime.ToString('MM-dd HH:mm') +
+		# server_log.txt 는 마스터와 동굴 폴더에 하나씩 있습니다. 이름만으로는
+		# 구분이 안 되니 폴더 이름을 같이 씁니다.
+		$where = Split-Path -Leaf (Split-Path -Parent $log.FullName)
+		$header = ('--- ' + $where + '\' + $log.Name + '   (' + $log.LastWriteTime.ToString('MM-dd HH:mm') +
 			', ' + $lines.Length + ' 줄)')
 
 		# 로그가 어떻게 끝났는지. 오류가 없을 때 이게 가장 중요한 정보입니다.
@@ -1158,6 +1186,30 @@ function Invoke-LastError {
 				$out.Add('   참고로 나온 경고:')
 				foreach ($k in ($noteHits.Keys | Sort-Object { -$noteHits[$_] } | Select-Object -First 5)) {
 					$out.Add('     ' + ([string]$noteHits[$k]).PadLeft(5) + ' 번  ' + $k)
+				}
+			}
+
+			$weight = @(Measure-ModWeight $lines)
+			if ($weight.Count -gt 0) {
+				$total = 0
+				foreach ($w in $weight) { $total += $w.Lines }
+
+				$out.Add('')
+				$out.Add('   이 로그에서 각 모드가 등록한 양 (많을수록 무겁습니다):')
+				$shown = 0
+				foreach ($w in ($weight | Select-Object -First 8)) {
+					$pct = 0
+					if ($total -gt 0) { $pct = [Math]::Round(100 * $w.Lines / $total) }
+					$out.Add('     ' + ([string]$w.Lines).PadLeft(7) + ' 줄  ' + ([string]$pct).PadLeft(3) +
+						'%  workshop-' + $w.Id.PadRight(12) + ' ' + $w.Name)
+					$shown++
+				}
+				if ($weight.Count -gt $shown) {
+					$out.Add('     ... 그리고 모드 ' + ($weight.Count - $shown) + ' 개 더')
+				}
+				if (-not $endedWell) {
+					$out.Add('')
+					$out.Add('     Lua 오류 없이 끊겼다면 위에서부터 몇 개를 꺼 보는 것이 가장 빠릅니다.')
 				}
 			}
 

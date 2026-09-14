@@ -342,6 +342,71 @@ foreach ($stray in @('서버오류.txt')) {
 	if (Test-Path -LiteralPath $f) { Remove-Item -LiteralPath $f -Force }
 }
 
+
+Write-Host ''
+Write-Host '=== 10. a log that dies with no Lua error names the heaviest mods ==='
+
+$wRoot = Join-Path $sandbox 'weight/Klei/DoNotStarveTogether/Cluster_9/Master'
+New-Item -ItemType Directory -Force -Path $wRoot | Out-Null
+function Get-KleiRoots { @((Join-Path $sandbox 'weight/Klei/DoNotStarveTogether')) }
+
+# A load that dies partway through registering content: no Lua error at all,
+# which is what a hard crash during preload actually looks like.
+$heavy = New-Object System.Collections.Generic.List[string]
+$heavy.Add('[00:00:01]: DoLuaFile scripts/main.lua')
+$heavy.Add('[00:00:03]: Loading mod: workshop-3383047161 (The Winterlands) Version:1.4.10')
+$heavy.Add('[00:00:03]: Loading mod: workshop-2334209327 (Heap of Foods) Version:7.3-b')
+$heavy.Add('[00:00:03]: Loading mod: workshop-501385076 (Quick Pick) Version:1.4.0')
+foreach ($i in 1..400) { $heavy.Add('[00:00:58]: Mod: workshop-3383047161 (The Winterlands)	    chesspiece_' + $i + '_dryice') }
+foreach ($i in 1..120) { $heavy.Add('[00:00:59]: Mod: workshop-2334209327 (Heap of Foods)	    kyno_dish_' + $i) }
+foreach ($i in 1..5)   { $heavy.Add('[00:01:00]: Mod: workshop-501385076 (Quick Pick)	    qp_' + $i) }
+foreach ($i in 1..30)  { $heavy.Add('[00:01:10]: Could not preload undefined prefab (ghost_' + $i + ')') }
+[IO.File]::WriteAllLines((Join-Path $wRoot 'client_log.txt'), $heavy)
+
+$script:reportLines = New-Object System.Collections.Generic.List[string]
+Invoke-LastError | Out-Null
+$rw = ($script:reportLines -join "`n")
+
+Check 'no Lua error is invented' (-not ($rw -match '걸린 줄'))
+Check 'the abrupt ending is reported' ($rw -match '갑자기 끊겼')
+Check 'the heaviest mod is listed first' `
+	($rw -match '400 줄[^\n]*workshop-3383047161[^\n]*The Winterlands') $rw
+Check 'a light mod is not blamed by weight' `
+	($rw -match '5 줄[^\n]*workshop-501385076')
+Check 'the share of the total is shown' ($rw -match '76%|75%|74%')
+Check 'it says what to switch off' ($rw -match '위에서부터 몇 개를 꺼')
+
+# The same file, but ending cleanly: the weight table still helps, the
+# "switch some off" advice does not apply.
+$heavy.Add('[00:01:20]: Shutting down')
+[IO.File]::WriteAllLines((Join-Path $wRoot 'client_log.txt'), $heavy)
+$script:reportLines = New-Object System.Collections.Generic.List[string]
+Invoke-LastError | Out-Null
+$rw2 = ($script:reportLines -join "`n")
+
+Check 'a clean ending is still reported as clean' ($rw2 -match '정상적으로 종료')
+Check 'and it does not tell you to switch mods off' (-not ($rw2 -match '위에서부터 몇 개를 꺼'))
+Check 'but the weight table is still there' ($rw2 -match 'workshop-3383047161')
+
+# Two shards write server_log.txt under the same name; the folder tells them apart.
+$caves = Join-Path $sandbox 'weight/Klei/DoNotStarveTogether/Cluster_9/Caves'
+New-Item -ItemType Directory -Force -Path $caves | Out-Null
+[IO.File]::WriteAllLines((Join-Path $wRoot 'server_log.txt'), @('[00:00:01]: master', '[00:00:02]: Shutting down'))
+[IO.File]::WriteAllLines((Join-Path $caves 'server_log.txt'), @('[00:00:01]: caves side', '[00:00:02]: Shutting down'))
+
+$script:reportLines = New-Object System.Collections.Generic.List[string]
+Invoke-LastError | Out-Null
+$rw3 = ($script:reportLines -join "`n")
+
+Check 'the master log is labelled by its folder' ($rw3 -match 'Master\\server_log\.txt')
+Check 'the caves log is labelled by its folder' ($rw3 -match 'Caves\\server_log\.txt')
+
+Remove-Item -LiteralPath (Join-Path $sandbox 'weight') -Recurse -Force -ErrorAction SilentlyContinue
+foreach ($stray in @('서버오류.txt')) {
+	$f = Join-Path $package $stray
+	if (Test-Path -LiteralPath $f) { Remove-Item -LiteralPath $f -Force }
+}
+
 # ── cleanup ─────────────────────────────────────────────────────────────────
 Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
 foreach ($stray in @('범인모드.txt', 'bisect_state.json')) {
