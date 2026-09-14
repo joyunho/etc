@@ -399,7 +399,38 @@ function Select-DistinctLogs($items) {
 	$out  = New-Object System.Collections.Generic.List[object]
 
 	foreach ($f in $items) {
-		$key = ($f.Name + '|' + $f.Length + '|' + $f.LastWriteTimeUtc.Ticks)
+		# 이름과 수정 시각으로는 못 거릅니다.
+		#   - DST 는 같은 내용을 server_log.txt 와 master_server_log.txt 로 둘 다 남깁니다.
+		#   - 문서 폴더와 OneDrive\문서 폴더가 같은 파일을 비추면 경로만 다릅니다.
+		#   - 복사본의 수정 시각은 원본과 눈금 단위까지 같지 않을 수 있습니다.
+		# 그래서 크기와 앞뒤 8 KB 의 해시로 봅니다. 50 MB 로그도 순식간입니다.
+		$key = $null
+		try {
+			$stream = [IO.File]::Open($f.FullName, 'Open', 'Read', 'ReadWrite')
+			try {
+				$span = [Math]::Min(8192, $stream.Length)
+				$head = New-Object byte[] $span
+				[void]$stream.Read($head, 0, $span)
+
+				$tail = New-Object byte[] $span
+				if ($stream.Length -gt $span) {
+					[void]$stream.Seek(-$span, 'End')
+					[void]$stream.Read($tail, 0, $span)
+				}
+
+				$sha = [Security.Cryptography.SHA256]::Create()
+				try {
+					$both = New-Object byte[] ($head.Length + $tail.Length)
+					[Array]::Copy($head, 0, $both, 0, $head.Length)
+					[Array]::Copy($tail, 0, $both, $head.Length, $tail.Length)
+					$key = ([string]$f.Length + '|' + [BitConverter]::ToString($sha.ComputeHash($both)))
+				} finally { $sha.Dispose() }
+			} finally { $stream.Dispose() }
+		} catch {
+			# 읽지 못하면 거르지 않고 그냥 둡니다. 중복보다 누락이 나쁩니다.
+			$key = $f.FullName
+		}
+
 		if ($seen.ContainsKey($key)) { continue }
 		$seen[$key] = $true
 		$out.Add($f)
@@ -1000,20 +1031,40 @@ function Invoke-CollectMods($root) {
 #  그대로 찍혀 있고, 보통 파일 맨 아래쪽입니다.
 
 # 오류 한 건의 시작을 알리는 표시들.
-$ERROR_MARKERS = @(
-	'\[string "',
-	'stack traceback',
-	'^\s*Error',
-	'LUA ERROR',
-	'attempt to (index|call|compare|perform|concatenate)',
+# 서버를 죽이는 오류. 이게 있으면 원인은 거의 확정입니다.
+$FATAL_MARKERS = @(
+	'MOD ERROR',
+	'DoLuaFile Error',
+	'Error loading main\.lua',
+	'Failed mSimulation->Reset\(\)',
+	'Error during game initialization',
 	'Assert failure',
-	'SCRIPT ERROR',
-	'Mod: .*Error',
-	'DoLuaFile',
-	'Failed to load',
-	'unexpected symbol',
-	"'end' expected",
-	'caused an error'
+	'Fatal Error',
+	'SCRIPT ERROR'
+)
+
+# Lua 가 터진 자리. 어느 모드인지 여기서 나옵니다.
+$LUA_MARKERS = @(
+	'LUA ERROR stack traceback',
+	'\[string "[^"]*\.lua"\]:\d+:',
+	'attempt to (index|call|compare|perform|concatenate)',
+	"variable '[^']+' is not declared",
+	'unexpected symbol near',
+	"'end' expected"
+)
+
+# 오류는 아니지만 알아두면 좋은 것.
+$NOTE_MARKERS = @(
+	'Could not preload undefined prefab',
+	'AnimationFile::LoadFile Failed',
+	'is not a valid prefab'
+)
+
+# 로그가 정상적으로 끝났는지. 없으면 프로그램이 그냥 튕긴 것입니다.
+$CLEAN_EXIT = @(
+	'Shutting down',
+	'lua_close took',
+	'HttpClient2 discarded'
 )
 
 function Invoke-LastError {
@@ -1057,7 +1108,10 @@ function Invoke-LastError {
 	$out.Add((Get-Date).ToString('yyyy-MM-dd HH:mm:ss'))
 	$out.Add('')
 
-	$pattern = ($ERROR_MARKERS -join '|')
+	$fatal = ($FATAL_MARKERS -join '|')
+	$lua   = ($LUA_MARKERS   -join '|')
+	$note  = ($NOTE_MARKERS  -join '|')
+	$clean = ($CLEAN_EXIT    -join '|')
 	$anyFound = $false
 
 	foreach ($log in $ordered) {
@@ -1065,45 +1119,120 @@ function Invoke-LastError {
 		try { $lines = [IO.File]::ReadAllLines($log.FullName) } catch { continue }
 		if ($lines.Length -eq 0) { continue }
 
-		$hits = @()
+		$fatalHits = @()
+		$luaHits   = @()
+		$noteHits  = @{}
+
 		for ($i = 0; $i -lt $lines.Length; $i++) {
-			if ($lines[$i] -match $pattern) { $hits += $i }
+			$line = $lines[$i]
+			if ($line -match $fatal) { $fatalHits += $i; continue }
+			if ($line -match $lua)   { $luaHits   += $i; continue }
+			if ($line -match $note) {
+				$k = ($line -replace '^\[[\d:]+\]:\s*', '')
+				if (-not $noteHits.ContainsKey($k)) { $noteHits[$k] = 0 }
+				$noteHits[$k] = $noteHits[$k] + 1
+			}
 		}
 
 		$header = ('--- ' + $log.Name + '   (' + $log.LastWriteTime.ToString('MM-dd HH:mm') +
 			', ' + $lines.Length + ' 줄)')
 
-		if ($hits.Count -eq 0) {
-			$out.Add($header + '  -> 오류 없음')
+		# 로그가 어떻게 끝났는지. 오류가 없을 때 이게 가장 중요한 정보입니다.
+		$tailFrom  = [Math]::Max(0, $lines.Length - 30)
+		$endedWell = $false
+		for ($i = $tailFrom; $i -lt $lines.Length; $i++) {
+			if ($lines[$i] -match $clean) { $endedWell = $true; break }
+		}
+
+		if ($fatalHits.Count -eq 0 -and $luaHits.Count -eq 0) {
+			if ($endedWell) {
+				$out.Add($header + '  -> 오류 없음. 정상적으로 종료된 로그입니다.')
+			} else {
+				$out.Add($header + '  -> Lua 오류는 없는데 로그가 갑자기 끊겼습니다.')
+				$out.Add('       프로그램이 통째로 튕긴 경우입니다 (메모리 부족 등).')
+				$out.Add('       모드 오류가 아니라서 로그에는 아무것도 안 남습니다.')
+			}
+
+			if ($noteHits.Count -gt 0) {
+				$out.Add('')
+				$out.Add('   참고로 나온 경고:')
+				foreach ($k in ($noteHits.Keys | Sort-Object { -$noteHits[$_] } | Select-Object -First 5)) {
+					$out.Add('     ' + ([string]$noteHits[$k]).PadLeft(5) + ' 번  ' + $k)
+				}
+			}
+
+			$out.Add('')
+			$out.Add('   ── 로그 마지막 12줄 ──')
+			for ($i = [Math]::Max(0, $lines.Length - 12); $i -lt $lines.Length; $i++) {
+				$out.Add('   ' + $lines[$i])
+			}
 			$out.Add('')
 			continue
 		}
 
 		$anyFound = $true
-		$out.Add($header + '  -> 오류로 보이는 줄 ' + $hits.Count + ' 개')
-		$out.Add('')
 
-		# 마지막 오류 주변을 넉넉히. 시작 실패의 이유는 거의 항상 마지막에 있습니다.
-		$start = [Math]::Max(0, $hits[$hits.Count - 1] - 25)
-		$end   = [Math]::Min($lines.Length - 1, $hits[$hits.Count - 1] + 40)
+		# 서버를 죽인 줄이 있으면 그것을, 없으면 마지막 Lua 오류를 씁니다.
+		# "LUA ERROR stack traceback:" 은 머리말일 뿐이라 그 줄을 짚으면 아무
+		# 정보가 없습니다. 무엇이 왜 터졌는지 적힌 줄을 골라야 합니다.
+		if ($fatalHits.Count -gt 0) {
+			$at   = $fatalHits[$fatalHits.Count - 1]
+			$kind = '서버를 멈춘 오류'
+		} else {
+			$at   = $luaHits[$luaHits.Count - 1]
+			$kind = 'Lua 오류'
 
-		$out.Add('   ── 마지막 오류 부근 ──')
-		for ($i = $start; $i -le $end; $i++) {
-			$out.Add('   ' + $lines[$i])
+			$said = '\[string "[^"]*\.lua"\]:\d+:|attempt to |is not declared|unexpected symbol|''end'' expected'
+			for ($k = $luaHits.Count - 1; $k -ge 0; $k--) {
+				if ($lines[$luaHits[$k]] -match $said) { $at = $luaHits[$k]; break }
+			}
 		}
+
+		$out.Add($header + '  -> ' + $kind + ' ' + ($fatalHits.Count + $luaHits.Count) + ' 줄')
+		$out.Add('')
+		$out.Add('   ▶ 걸린 줄 (' + ($at + 1) + '번째):')
+		$out.Add('     ' + $lines[$at].Trim())
 		$out.Add('')
 
-		# 마지막 20줄도. 시작이 끊긴 지점이 여기 드러납니다.
-		$out.Add('   ── 로그 마지막 20줄 ──')
-		for ($i = [Math]::Max(0, $lines.Length - 20); $i -lt $lines.Length; $i++) {
-			$out.Add('   ' + $lines[$i])
+		# 모드 번호를 바로 뽑아 줍니다. 이게 사실상의 답입니다.
+		$who = @{}
+		$from = [Math]::Max(0, $at - 5)
+		$to   = [Math]::Min($lines.Length - 1, $at + 40)
+		for ($i = $from; $i -le $to; $i++) {
+			foreach ($m in [regex]::Matches($lines[$i], '(?:\.\./)?mods/workshop-(\d+)[/\\]')) {
+				$who[$m.Groups[1].Value] = $true
+			}
+			foreach ($m in [regex]::Matches($lines[$i], 'MOD ERROR:\s*workshop-(\d+)')) {
+				$who[$m.Groups[1].Value] = $true
+			}
+		}
+
+		if ($who.Count -gt 0) {
+			$out.Add('   ▶ 이 오류에 나온 모드:')
+			foreach ($id in ($who.Keys | Sort-Object)) {
+				$nm = ''
+				for ($i = 0; $i -lt $lines.Length; $i++) {
+					$lm = [regex]::Match($lines[$i], 'Loading mod: workshop-' + $id + '\s*\((.*)\)\s*Version:')
+					if ($lm.Success) { $nm = $lm.Groups[1].Value.Trim(); break }
+				}
+				$out.Add('     workshop-' + $id.PadRight(12) + ' ' + $nm)
+			}
+			$out.Add('     (맨 위에 나온 모드가 보통 범인입니다. 스택은 아래에서 위로 읽습니다.)')
+			$out.Add('')
+		}
+
+		$out.Add('   ── 앞뒤 문맥 ──')
+		for ($i = [Math]::Max(0, $at - 12); $i -le $to; $i++) {
+			$mark = $(if ($i -eq $at) { ' >>' } else { '   ' })
+			$out.Add($mark + ' ' + $lines[$i])
 		}
 		$out.Add('')
 
 		Write-Host ''
 		Write-Host ('  ' + $log.Name) -ForegroundColor Yellow
-		foreach ($i in ($hits | Select-Object -Last 3)) {
-			Write-Host ('    ' + $lines[$i].Trim()) -ForegroundColor Red
+		Write-Host ('    ' + $lines[$at].Trim()) -ForegroundColor Red
+		foreach ($id in ($who.Keys | Sort-Object)) {
+			Write-Host ('      -> workshop-' + $id) -ForegroundColor Red
 		}
 	}
 
@@ -1112,6 +1241,9 @@ function Invoke-LastError {
 		Write-Warn '로그에서 오류 같은 줄을 찾지 못했습니다.'
 		Write-Host '  서버를 한 번 더 켜 보신 뒤 이 파일을 다시 실행해 주세요.'
 	}
+
+	# 테스트에서 읽을 수 있도록 같은 내용을 공용 자리에도 둡니다.
+	$script:reportLines = $out
 
 	$file = Join-Path $PackageRoot '서버오류.txt'
 	try {

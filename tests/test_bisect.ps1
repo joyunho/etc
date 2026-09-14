@@ -200,7 +200,7 @@ foreach ($junk in @('server.ini', 'modconfiguration_workshop-3383047161', 'adjec
 }
 [IO.File]::WriteAllText((Join-Path $master 'server_log.txt'), 'DoLuaFile Error')
 [IO.File]::WriteAllText((Join-Path $master 'server_log_2026-09-15-00-19-33.txt'), 'DoLuaFile Error')
-[IO.File]::WriteAllText((Join-Path $cluster 'caves_server_log.txt'), 'DoLuaFile Error')
+[IO.File]::WriteAllText((Join-Path $cluster 'caves_server_log.txt'), 'DoLuaFile Error -- a caves log of its own length')
 [IO.File]::WriteAllText((Join-Path $cluster 'client_log.txt'), 'Sim paused')
 
 $found    = @(Get-DstLogs)
@@ -253,6 +253,94 @@ $stateB = Read-BisectState
 
 Check 'the search does not advance on its own' ($stateA.Round -eq $stateB.Round)
 Invoke-Bisect 'stop' | Out-Null
+
+
+Write-Host ''
+Write-Host '=== 9. lasterror tells a real error from ordinary startup noise ==='
+
+$lastRoot = Join-Path $sandbox 'last/Klei/DoNotStarveTogether/Cluster_9/Master'
+New-Item -ItemType Directory -Force -Path $lastRoot | Out-Null
+
+function Get-KleiRoots { @((Join-Path $sandbox 'last/Klei/DoNotStarveTogether')) }
+
+# A healthy startup. Every line here appears in a log that booted fine --
+# including "DoLuaFile scripts/main.lua", which the first version of this tool
+# matched as an error and then centred its report on.
+$healthy = @(
+	'[00:00:01]: LOADING LUA',
+	'[00:00:01]: DoLuaFile scripts/main.lua',
+	'[00:00:01]: DoLuaFile loading buffer scripts/main.lua',
+	'[00:00:58]: Mod: workshop-3383047161 (The Winterlands)	  Registering prefab file: prefabs/emperor_egg',
+	'[00:00:58]: Mod: workshop-3383047161 (The Winterlands)	    chesspiece_moon_dryice',
+	'[00:01:20]: Could not preload undefined prefab (paint_fx)',
+	'[00:01:20]: Could not preload undefined prefab (paint_fx)',
+	'[00:02:31]: anim/quagmire_pot.zip - 10',
+	'[00:02:31]: CurlRequestManager::ClientThread::Main() complete',
+	'[00:02:32]: Shutting down'
+)
+[IO.File]::WriteAllLines((Join-Path $lastRoot 'server_log.txt'), $healthy)
+
+$script:reportLines = New-Object System.Collections.Generic.List[string]
+Invoke-LastError | Out-Null
+$rep = ($script:reportLines -join "`n")
+
+Check 'a clean startup is not reported as an error' ($rep -match '오류 없음')
+Check 'and it says the log ended normally'          ($rep -match '정상적으로 종료')
+Check 'DoLuaFile scripts/main.lua is not an error'  (-not ($rep -match '걸린 줄'))
+Check 'repeated warnings are counted, not dumped'   ($rep -match '2 번  Could not preload')
+
+# The same log, cut off mid-write: no Lua error, but the process died.
+[IO.File]::WriteAllLines((Join-Path $lastRoot 'server_log.txt'), $healthy[0..7])
+$script:reportLines = New-Object System.Collections.Generic.List[string]
+Invoke-LastError | Out-Null
+$rep2 = ($script:reportLines -join "`n")
+
+Check 'a log that just stops is called out as a hard crash' ($rep2 -match '갑자기 끊겼')
+Check 'and it says this is not a mod error'                 ($rep2 -match '모드 오류가 아니')
+
+# A real one, taken from the crash this tool was written for.
+$crash = @(
+	'[00:00:03]: Loading mod: workshop-818739975 (Adshovel) Version:1.6',
+	'[00:00:03]: Loading mod: workshop-1289779251 (Cherry Forest) Version:1.6.107',
+	'[00:00:03]: DoLuaFile scripts/main.lua',
+	'[00:03:52]: [string "../mods/workshop-818739975/modmain.lua"]:98: attempt to call global ''Point'' (a nil value)',
+	'LUA ERROR stack traceback:',
+	'    ../mods/workshop-818739975/modmain.lua:98 in (field) onfinish (Lua) <97-169>',
+	'    ../mods/workshop-1289779251/postinit/components/workable.lua:51 in (method) WorkedBy (Lua) <29-52>',
+	'    scripts/gamelogic.lua:636 in (upvalue) PopulateWorld (Lua) <368-664>',
+	'[00:04:24]: Shutting down'
+)
+[IO.File]::WriteAllLines((Join-Path $lastRoot 'server_log.txt'), $crash)
+$script:reportLines = New-Object System.Collections.Generic.List[string]
+Invoke-LastError | Out-Null
+$rep3 = ($script:reportLines -join "`n")
+
+Check 'the real error line is the one reported' `
+	($rep3 -match "attempt to call global 'Point'") $rep3
+Check 'the mod that broke is named'        ($rep3 -match 'workshop-818739975\s+Adshovel')
+Check 'the mod in the stack is named too'  ($rep3 -match 'workshop-1289779251\s+Cherry Forest')
+Check 'the failing line is marked in the context' ($rep3 -match '>> \[00:03:52\]')
+
+# DST writes the same content as server_log.txt and master_server_log.txt.
+$twin = Join-Path $lastRoot 'master_server_log.txt'
+Copy-Item -LiteralPath (Join-Path $lastRoot 'server_log.txt') -Destination $twin -Force
+(Get-Item -LiteralPath $twin).LastWriteTimeUtc =
+	(Get-Item -LiteralPath (Join-Path $lastRoot 'server_log.txt')).LastWriteTimeUtc
+
+$script:reportLines = New-Object System.Collections.Generic.List[string]
+Invoke-LastError | Out-Null
+$rep4 = ($script:reportLines -join "`n")
+
+# One reported log means one "걸린 줄" heading. The error text itself appears
+# twice per log -- once as the heading, once inside the context block.
+$reported = (@([regex]::Matches($rep4, '걸린 줄'))).Count
+Check 'the same log under two names is reported once' ($reported -eq 1) ("reported " + $reported + " times")
+
+Remove-Item -LiteralPath (Join-Path $sandbox 'last') -Recurse -Force -ErrorAction SilentlyContinue
+foreach ($stray in @('서버오류.txt')) {
+	$f = Join-Path $package $stray
+	if (Test-Path -LiteralPath $f) { Remove-Item -LiteralPath $f -Force }
+}
 
 # ── cleanup ─────────────────────────────────────────────────────────────────
 Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
