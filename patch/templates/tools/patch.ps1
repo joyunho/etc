@@ -14,7 +14,7 @@
 #   Windows PowerShell 5.1 (윈도우 기본 내장) 에서 동작하도록 작성했습니다.
 
 param(
-	[ValidateSet('install', 'restore', 'diagnose', 'collect', 'collectmods', 'lasterror')]
+	[ValidateSet('install', 'restore', 'diagnose', 'collect', 'collectmods', 'lasterror', 'modcheck')]
 	[string]$Action = 'install',
 
 	# 자동 탐색이 실패할 때 폴더를 직접 지정할 수 있습니다.
@@ -1069,6 +1069,476 @@ function Invoke-LastError {
 	Write-Host ''
 }
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  어떤 모드가 문제인지 찾아내기
+# ══════════════════════════════════════════════════════════════════════════════
+#
+#  설치된 모드의 lua 를 전부 훑어서, 서로 부딪칠 만한 지점을 찾아냅니다.
+#  추측이 아니라 "이 모드의 이 파일에 이 코드가 있다" 만 말합니다.
+#
+#  가장 중요한 것은 WX-78 모듈 개수입니다. 바닐라 wx78_moduledefs.lua 에는
+#      assert(module_netid < 64, "To support additional WX modules, ...")
+#  가 있고, 바닐라 자신이 23 개를 먼저 씁니다. 그래서 모드 전체가 나눠 쓸 수
+#  있는 자리는 40 개뿐이고, 넘기는 순간 서버가 아예 안 켜집니다.
+
+$WX78_LIMIT     = 63   # assert(module_netid < 64)
+$WX78_VANILLA   = 23   # 바닐라가 먼저 쓰는 개수
+$SCAN_MAX_BYTES = 3MB  # 이보다 큰 lua 는 건너뜁니다 (보통 번역 표)
+
+# 모드 코드에서 찾을 흔적들.
+#   Key      : 내부 이름
+#   Label    : 사람이 읽을 이름
+#   Pattern  : 정규식
+#   Weight   : 'crash' 서버가 안 켜질 수 있음 / 'cook' 요리에 영향 / 'watch' 참고
+$MOD_SIGNALS = @(
+	@{ Key = 'wx78';      Label = 'WX-78 모듈 추가';        Weight = 'crash'
+	   Pattern = '(?<!function\s{1,10})AddNewModuleDefinition\s*\(' },
+	@{ Key = 'wx78tbl';   Label = 'WX-78 모듈 표에 넣기';    Weight = 'crash'
+	   Pattern = 'table\.insert\s*\(\s*module_definitions' },
+	@{ Key = 'dishes';    Label = '냄비 요리 추가';          Weight = 'watch'
+	   Pattern = 'AddCookerRecipe\s*\(' },
+	@{ Key = 'errorhook'; Label = '오류 처리 가로채기';      Weight = 'crash'
+	   Pattern = 'SetGlobalErrorWidget|(?m)^\s*(_G\.)?error\s*=\s*function' },
+	@{ Key = 'container'; Label = '상자 내부 손대기';        Weight = 'cook'
+	   Pattern = 'AddComponentPostInit\s*\(\s*"container"|containers\.params|GetNumSlots\s*=' },
+	@{ Key = 'chest';     Label = '상자 프리팹 손대기';      Weight = 'cook'
+	   Pattern = 'AddPrefabPostInit\s*\(\s*"(treasurechest|icebox|saltbox|meatrack)"' },
+	@{ Key = 'cookpot';   Label = '냄비 손대기';            Weight = 'cook'
+	   Pattern = 'AddPrefabPostInit\s*\(\s*"(cookpot|portablecookpot|archive_cookpot)"|AddComponentPostInit\s*\(\s*"stewer"' },
+	@{ Key = 'cooking';   Label = '요리 계산식 손대기';      Weight = 'cook'
+	   Pattern = 'CalculateRecipe\s*=|cooking\.recipes\s*\[|IsCookingIngredient\s*=' },
+	@{ Key = 'autopick';  Label = '자동으로 물건 옮기기';    Weight = 'cook'
+	   Pattern = 'AddComponentPostInit\s*\(\s*"harvestable"|DoPeriodicTask[^\n]{0,120}(Harvest|Pickup|Collect|Sort)' },
+	@{ Key = 'oldapi';    Label = '옛날 AddRecipe 사용';     Weight = 'watch'
+	   Pattern = '(?<!AddRecipe2)AddRecipe\s*\(' }
+)
+
+# 모드 하나의 lua 를 전부 읽고 흔적을 셉니다.
+function Measure-ModCode($modPath) {
+	$hits = @{}
+	foreach ($sig in $MOD_SIGNALS) { $hits[$sig.Key] = 0 }
+
+	$result = [pscustomobject]@{
+		Hits         = $hits
+		Files        = 0
+		CookRecipes  = New-Object System.Collections.Generic.List[string]
+		CraftRecipes = New-Object System.Collections.Generic.List[string]
+		Unreadable   = 0
+	}
+
+	$files = @()
+	try {
+		$files = @(Get-ChildItem -LiteralPath $modPath -Recurse -File -Filter *.lua -ErrorAction SilentlyContinue)
+	} catch { return $result }
+
+	foreach ($f in $files) {
+		if ($f.Length -gt $SCAN_MAX_BYTES) { continue }
+
+		$text = $null
+		try { $text = [IO.File]::ReadAllText($f.FullName) } catch { $result.Unreadable++; continue }
+		if ([string]::IsNullOrEmpty($text)) { continue }
+
+		$result.Files++
+
+		foreach ($sig in $MOD_SIGNALS) {
+			$n = [regex]::Matches($text, $sig.Pattern).Count
+			if ($n -gt 0) { $result.Hits[$sig.Key] = $result.Hits[$sig.Key] + $n }
+		}
+
+		# 냄비 요리 이름: 두 모드가 같은 이름을 쓰면 나중에 켜진 쪽만 남습니다.
+		foreach ($m in [regex]::Matches($text,
+			'AddCookerRecipe\s*\(\s*"[^"]{1,40}"\s*,\s*\{[\s\S]{0,300}?name\s*=\s*"([^"]{1,60})"')) {
+			$result.CookRecipes.Add($m.Groups[1].Value)
+		}
+
+		# 제작법 이름도 마찬가지입니다.
+		foreach ($m in [regex]::Matches($text, 'AddRecipe2?\s*\(\s*"([^"]{1,60})"')) {
+			$result.CraftRecipes.Add($m.Groups[1].Value)
+		}
+	}
+
+	return $result
+}
+
+# 최근 로그에서 "이 모드 때문"이라고 이름이 찍힌 것만 모읍니다.
+function Get-ModBlameFromLogs {
+	$blame = @{}
+
+	# server_log.txt 뿐 아니라 백업본(server_log_2026-..-...txt)까지 봅니다.
+	$paths = @(Get-DstLogs)
+	foreach ($root in (Get-KleiRoots)) {
+		try {
+			foreach ($f in (Get-ChildItem -LiteralPath $root -Recurse -File -ErrorAction SilentlyContinue |
+					Where-Object { $_.Name -like '*log*.txt' })) {
+				if ($paths -notcontains $f.FullName) { $paths += $f.FullName }
+			}
+		} catch { }
+	}
+
+	$logs = @()
+	if ($paths.Count -gt 0) {
+		try {
+			$logs = @(Get-ChildItem -LiteralPath $paths -ErrorAction SilentlyContinue |
+				Sort-Object LastWriteTime -Descending | Select-Object -First 6)
+		} catch { $logs = @() }
+	}
+
+	foreach ($log in $logs) {
+		$text = $null
+		try { $text = [IO.File]::ReadAllText($log.FullName) } catch { continue }
+		if ([string]::IsNullOrEmpty($text)) { continue }
+
+		foreach ($pair in @(
+			@{ Pattern = 'MOD ERROR:\s*workshop-(\d+)';        Note = '로그에 MOD ERROR 로 찍힘' },
+			@{ Pattern = '\.\./mods/workshop-(\d+)/[^\s]+';    Note = '오류 스택에 이 모드 파일이 나옴' },
+			@{ Pattern = 'Mod:\s*workshop-(\d+)[^\n]*[Ee]rror'; Note = '모드 로드 중 오류' }
+		)) {
+			foreach ($m in [regex]::Matches($text, $pair.Pattern)) {
+				$id = $m.Groups[1].Value
+				if (-not $blame.ContainsKey($id)) {
+					$blame[$id] = New-Object System.Collections.Generic.List[string]
+				}
+				if (-not $blame[$id].Contains($pair.Note)) { $blame[$id].Add($pair.Note) }
+			}
+		}
+	}
+
+	return $blame
+}
+
+
+# 서버에 실제로 "켜져" 있는 모드를 modoverrides.lua 에서 읽습니다.
+# 구독만 해 놓고 안 켠 모드는 아무 자리도 차지하지 않으므로, 이것을 알아야
+# WX-78 자리 계산이 맞습니다.
+function Get-EnabledMods {
+	$state = @{}
+
+	foreach ($root in (Get-KleiRoots)) {
+		$files = @()
+		try {
+			$files = @(Get-ChildItem -LiteralPath $root -Recurse -File -Filter 'modoverrides.lua' -ErrorAction SilentlyContinue)
+		} catch { continue }
+
+		foreach ($f in $files) {
+			$text = $null
+			try { $text = [IO.File]::ReadAllText($f.FullName) } catch { continue }
+			if ([string]::IsNullOrEmpty($text)) { continue }
+
+			# ["workshop-123"] = { enabled = true, ... }
+			foreach ($m in [regex]::Matches($text,
+				'\[\s*"workshop-(\d+)"\s*\]\s*=\s*\{([\s\S]{0,400}?)(?=\n\s*\[\s*"workshop-|\z)')) {
+				$id   = $m.Groups[1].Value
+				$body = $m.Groups[2].Value
+				$on   = $true
+				$e    = [regex]::Match($body, 'enabled\s*=\s*(true|false)')
+				if ($e.Success) { $on = ($e.Groups[1].Value -eq 'true') }
+
+				# 한 번이라도 켜져 있으면 켜진 것으로 봅니다 (마스터/동굴 중 한쪽).
+				if ($on -or -not $state.ContainsKey($id)) { $state[$id] = $on }
+			}
+		}
+	}
+
+	return $state
+}
+
+function Invoke-ModCheck($root) {
+	Write-Head '어떤 모드가 문제인지 찾기'
+
+	$script:reportLines = New-Object System.Collections.Generic.List[string]
+	Add-Line 'DST 모드 점검'
+	Add-Line ((Get-Date).ToString('yyyy-MM-dd HH:mm:ss'))
+
+	Write-Host '모드를 찾는 중...'
+	$mods = Get-AllModFolders $root
+
+	if ($mods.Count -eq 0) {
+		Write-Fail '설치된 모드를 하나도 찾지 못했습니다.'
+		Write-Host '  모드가 들어 있는 폴더를 modcheck.bat 위로 드래그해 주세요.'
+		Write-Host '  보통 이 경로입니다: ...\steamapps\workshop\content\322330'
+		Write-Host ''
+		return
+	}
+
+	Write-Ok ('모드 ' + $mods.Count + ' 개를 찾았습니다. 코드를 읽는 중입니다...')
+
+	$blame   = Get-ModBlameFromLogs
+	$onOff   = Get-EnabledMods
+	$rows    = New-Object System.Collections.Generic.List[object]
+	$cookMap = @{}   # 요리 이름 -> 그 이름을 쓰는 모드들
+	$done    = 0
+
+	foreach ($entry in $mods) {
+		$done++
+		Write-Progress -Activity '모드 코드 읽는 중' -Status $entry.Id -PercentComplete (100 * $done / $mods.Count)
+
+		$info = Read-ModInfo $entry.Path
+		$code = Measure-ModCode $entry.Path
+
+		foreach ($dish in ($code.CookRecipes | Sort-Object -Unique)) {
+			if (-not $cookMap.ContainsKey($dish)) {
+				$cookMap[$dish] = New-Object System.Collections.Generic.List[string]
+			}
+			$cookMap[$dish].Add($entry.Id)
+		}
+
+		$label = $info.Name
+		if ([string]::IsNullOrWhiteSpace($label)) { $label = $entry.Id }
+
+		$bare = $entry.Id -replace '^workshop-', ''
+		$on   = $null
+		if ($onOff.ContainsKey($bare)) { $on = [bool]$onOff[$bare] }
+
+		$rows.Add([pscustomobject]@{
+			Id      = $entry.Id
+			Name    = $label
+			Enabled = $on
+			Wx      = 0
+			Version = $info.Version
+			Api     = $info.Api
+			Client  = $info.ClientOnly
+			Code    = $code
+			Blame   = $(if ($blame.ContainsKey(($entry.Id -replace '^workshop-', ''))) {
+							$blame[($entry.Id -replace '^workshop-', '')]
+						} elseif ($blame.ContainsKey($entry.Id)) { $blame[$entry.Id] } else { $null })
+			Path    = $entry.Path
+		})
+	}
+	Write-Progress -Activity '모드 코드 읽는 중' -Completed
+
+	$known = @($rows | Where-Object { $_.Enabled -ne $null })
+	$on    = @($rows | Where-Object { $_.Enabled -eq $true })
+	$off   = @($rows | Where-Object { $_.Enabled -eq $false })
+
+	Add-Line ''
+	if ($known.Count -eq 0) {
+		Add-Line ('  설치된 모드 ' + $rows.Count + ' 개. (modoverrides.lua 를 못 찾아서, 어느 것이 서버에')
+		Add-Line '  켜져 있는지는 구분하지 못했습니다. 아래는 설치된 것 전부를 본 결과입니다.)'
+	} else {
+		Add-Line ('  설치된 모드 ' + $rows.Count + ' 개 중 서버에 켜져 있는 것 ' + $on.Count + ' 개, 꺼져 있는 것 ' + $off.Count + ' 개.')
+		Add-Line '  꺼져 있는 모드는 아무 문제도 일으키지 않으므로 아래 계산에서 뺐습니다.'
+	}
+
+	# ── WX-78 모듈 자리 계산 ───────────────────────────────────────────────
+	# 모드는 두 가지 방법으로 모듈을 등록합니다. 둘 다 쓰는 모드도 있으므로
+	# 더하지 않고 큰 쪽을 그 모드의 개수로 봅니다.
+	foreach ($r in $rows) {
+		$a = $r.Code.Hits['wx78']
+		$b = $r.Code.Hits['wx78tbl']
+		$r.Wx = $(if ($a -ge $b) { $a } else { $b })
+	}
+
+	# 서버에 켜져 있는 모드만 자리를 씁니다.
+	$wxRows  = @($rows | Where-Object { $_.Wx -gt 0 -and $_.Enabled -ne $false } |
+					Sort-Object { -$_.Wx })
+	$wxTotal = 0
+	foreach ($r in $wxRows) { $wxTotal += $r.Wx }
+	$wxRoom  = $WX78_LIMIT - $WX78_VANILLA
+
+	Add-Line ''
+	Add-Line '━━ 1. 서버가 아예 안 켜지게 만들 수 있는 것 ━━'
+	Add-Line ''
+	Add-Line ('  WX-78 모듈 자리: 전체 ' + $WX78_LIMIT + ' 개 중 바닐라가 ' + $WX78_VANILLA +
+		' 개를 먼저 씁니다. 모드 몫은 ' + $wxRoom + ' 개입니다.')
+	Add-Line ('  지금 모드들이 쓰는 것으로 보이는 개수: 약 ' + $wxTotal + ' 개')
+
+	if ($wxRows.Count -eq 0) {
+		Add-Line '    WX-78 모듈을 추가하는 모드가 없습니다. 이 문제는 아닙니다.'
+	} else {
+		foreach ($r in $wxRows) {
+			Add-Line ('    ' + $r.Id.PadRight(22) + ' 약 ' + ([string]$r.Wx).PadLeft(3) + ' 개   ' + $r.Name)
+		}
+		if ($wxTotal -gt $wxRoom) {
+			Add-Line ''
+			Add-Line ('  >> 자리가 ' + ($wxTotal - $wxRoom) + ' 개 모자랍니다. 이 상태면 서버가 안 켜집니다.')
+			Add-Line '     위 목록에서 개수가 많은 모드를 하나 끄면 켜집니다.'
+			Add-Line '     (개수는 코드에서 센 어림값입니다. 실제 원인은 아래 3번 로그 쪽이 정확합니다.)'
+		} else {
+			Add-Line ''
+			Add-Line ('  아직 ' + ($wxRoom - $wxTotal) + ' 자리 남았습니다. 이 문제는 아닙니다.')
+		}
+	}
+
+	$errHook = @($rows | Where-Object { $_.Code.Hits['errorhook'] -gt 0 -and $_.Enabled -ne $false })
+	if ($errHook.Count -gt 0) {
+		Add-Line ''
+		Add-Line '  오류 화면을 자기 코드로 바꾸는 모드:'
+		foreach ($r in $errHook) {
+			Add-Line ('    ' + $r.Id.PadRight(22) + ' ' + $r.Name)
+		}
+		Add-Line '    이런 모드가 있으면, 다른 모드의 사소한 오류 하나가'
+		Add-Line '    "서버 시작 실패" 로 커질 수 있습니다.'
+	}
+
+	# ── 요리에 끼어드는 모드 ───────────────────────────────────────────────
+	Add-Line ''
+	Add-Line '━━ 2. 왈리 요리에 끼어들 수 있는 모드 ━━'
+	Add-Line ''
+
+	$cookKeys = @('container', 'chest', 'cookpot', 'cooking', 'autopick')
+	$cookRows = @($rows | Where-Object {
+		$n = 0
+		foreach ($k in $cookKeys) { $n += $_.Code.Hits[$k] }
+		$n -gt 0
+	})
+
+	if ($cookRows.Count -eq 0) {
+		Add-Line '  없습니다.'
+	} else {
+		foreach ($r in ($cookRows | Sort-Object Name)) {
+			$marks = New-Object System.Collections.Generic.List[string]
+			foreach ($sig in $MOD_SIGNALS) {
+				if ($cookKeys -contains $sig.Key -and $r.Code.Hits[$sig.Key] -gt 0) {
+					$marks.Add($sig.Label + ' x' + $r.Code.Hits[$sig.Key])
+				}
+			}
+			Add-Line ('    ' + $r.Id.PadRight(22) + ' ' + $r.Name)
+			Add-Line ('        ' + ($marks -join ' / '))
+		}
+		Add-Line ''
+		Add-Line '  끼어든다고 해서 다 나쁜 것은 아닙니다. 상자를 추가하는 모드는 당연히'
+		Add-Line '  상자를 건드립니다. 왈리가 요리를 못 할 때 먼저 의심할 목록일 뿐입니다.'
+	}
+
+	$dishRows = @($rows | Where-Object { $_.Code.CookRecipes.Count -gt 0 -and $_.Enabled -ne $false })
+	if ($dishRows.Count -gt 0) {
+		Add-Line ''
+		Add-Line '  냄비 요리를 추가하는 모드:'
+		foreach ($r in ($dishRows | Sort-Object { -$_.Code.CookRecipes.Count })) {
+			Add-Line ('    ' + $r.Id.PadRight(22) + ([string](($r.Code.CookRecipes | Sort-Object -Unique).Count)).PadLeft(4) + ' 가지   ' + $r.Name)
+		}
+	}
+
+	# 같은 요리 이름을 두 모드가 쓰는 경우
+	$clashes = @($cookMap.Keys | Where-Object { ($cookMap[$_] | Sort-Object -Unique).Count -gt 1 })
+	Add-Line ''
+	if ($clashes.Count -eq 0) {
+		Add-Line '  같은 요리 이름을 두 모드가 동시에 쓰는 경우: 없습니다.'
+	} else {
+		Add-Line ('  같은 요리 이름을 두 모드가 동시에 씁니다 (' + $clashes.Count + ' 건).')
+		Add-Line '  이 경우 나중에 켜진 모드의 요리만 남습니다.'
+		foreach ($dish in ($clashes | Sort-Object | Select-Object -First 20)) {
+			Add-Line ('    ' + $dish.PadRight(28) + ' <- ' + (($cookMap[$dish] | Sort-Object -Unique) -join ', '))
+		}
+		if ($clashes.Count -gt 20) { Add-Line ('    ... 그리고 ' + ($clashes.Count - 20) + ' 건 더') }
+	}
+
+	# ── 로그가 직접 지목한 모드 ────────────────────────────────────────────
+	Add-Line ''
+	Add-Line '━━ 3. 로그가 직접 이름을 부른 모드 ━━'
+	Add-Line ''
+	Add-Line '  이게 가장 확실한 증거입니다. 여기 이름이 있으면 그 모드가 범인입니다.'
+	Add-Line ''
+
+	$blamed = @($rows | Where-Object { $_.Blame -ne $null })
+
+	$seen = @{}
+	foreach ($r in $rows) { $seen[($r.Id -replace '^workshop-', '')] = $true }
+	$orphan = @($blame.Keys | Where-Object { -not $seen.ContainsKey($_) })
+
+	if ($blamed.Count -eq 0 -and $orphan.Count -eq 0) {
+		Add-Line '    없습니다. 최근 로그에서 모드 이름이 찍힌 오류가 없습니다.'
+	} else {
+		foreach ($r in $blamed) {
+			Add-Line ('    ' + $r.Id.PadRight(22) + ' ' + $r.Name)
+			foreach ($note in $r.Blame) { Add-Line ('        - ' + $note) }
+		}
+		foreach ($id in ($orphan | Sort-Object)) {
+			Add-Line ('    workshop-' + $id.PadRight(13) + ' (설치 폴더를 못 찾았습니다)')
+			foreach ($note in $blame[$id]) { Add-Line ('        - ' + $note) }
+		}
+	}
+
+	# ── 나머지 참고 ────────────────────────────────────────────────────────
+	Add-Line ''
+	Add-Line '━━ 4. 참고 ━━'
+	Add-Line ''
+
+	$oldApi = @($rows | Where-Object { $_.Api -ne '' -and [int]$_.Api -lt 10 })
+	if ($oldApi.Count -gt 0) {
+		Add-Line ('  api_version 이 낡은 모드 (' + $oldApi.Count + ' 개). 지금은 돌아가지만 업데이트에 약합니다.')
+		foreach ($r in ($oldApi | Sort-Object { [int]$_.Api })) {
+			Add-Line ('    api ' + $r.Api.PadLeft(2) + '  ' + $r.Id.PadRight(22) + ' ' + $r.Name)
+		}
+		Add-Line ''
+	}
+
+	if ($onOff.Count -gt 0) {
+		$have = @{}
+		foreach ($r in $rows) { $have[($r.Id -replace '^workshop-', '')] = $true }
+		$missing = @($onOff.Keys | Where-Object { $onOff[$_] -and -not $have.ContainsKey($_) })
+		if ($missing.Count -gt 0) {
+			Add-Line ('  서버에는 켜 놓았는데 설치가 안 된 모드 (' + $missing.Count + ' 개).')
+			Add-Line '  이건 그 자체로 시작 실패의 원인이 됩니다. 창작마당에서 다시 구독하세요.'
+			foreach ($id in ($missing | Sort-Object)) { Add-Line ('    workshop-' + $id) }
+			Add-Line ''
+		}
+	}
+
+	$clientOnly = @($rows | Where-Object { $_.Client -match '^(true|1)$' -and $_.Enabled -ne $false })
+	if ($clientOnly.Count -gt 0) {
+		Add-Line ('  client_only_mod 인 모드 (' + $clientOnly.Count + ' 개). 서버에 켜 봐야 아무 일도 하지 않습니다.')
+		foreach ($r in ($clientOnly | Sort-Object Name)) {
+			Add-Line ('    ' + $r.Id.PadRight(22) + ' ' + $r.Name)
+		}
+		Add-Line ''
+	}
+
+	$oldRecipe = @($rows | Where-Object { $_.Code.Hits['oldapi'] -gt 0 })
+	if ($oldRecipe.Count -gt 0) {
+		Add-Line ('  옛날 AddRecipe 를 쓰는 모드 (' + $oldRecipe.Count + ' 개). 로그에 경고만 남기고 동작은 합니다.')
+		Add-Line ('    ' + (($oldRecipe | ForEach-Object { $_.Id }) -join ', '))
+		Add-Line ''
+	}
+
+	# ── 전체 목록 ──────────────────────────────────────────────────────────
+	Add-Line ''
+	Add-Line '━━ 5. 설치된 모드 전체 ━━'
+	Add-Line ''
+	Add-Line ('  ' + 'ID'.PadRight(22) + 'api'.PadLeft(4) + '  켜짐  표시   이름')
+
+	foreach ($r in ($rows | Sort-Object Name)) {
+		$mark = ' ?  '
+		if ($r.Enabled -eq $true)  { $mark = ' O  ' }
+		if ($r.Enabled -eq $false) { $mark = ' -  ' }
+		$flag = '     '
+		if ($r.Blame -ne $null)                 { $flag = '[로그]' }
+		elseif ($r.Code.Hits['errorhook'] -gt 0) { $flag = '[오류]' }
+		elseif ($r.Wx -gt 0)                     { $flag = '[WX78]' }
+		elseif ($r.Code.Hits['cooking'] -gt 0 -or $r.Code.Hits['cookpot'] -gt 0) { $flag = '[요리]' }
+		elseif ($r.Code.Hits['container'] -gt 0 -or $r.Code.Hits['chest'] -gt 0) { $flag = '[상자]' }
+
+		Add-Line ('  ' + $r.Id.PadRight(22) + $r.Api.PadLeft(4) + '  ' +
+			$mark + '  ' + $flag + ' ' + $r.Name)
+	}
+
+	Add-Line ''
+	Add-Line '━━ 읽는 법 ━━'
+	Add-Line ''
+	Add-Line '  [로그]  최근 로그가 이 모드 이름을 오류와 함께 찍었습니다. 1순위로 끄세요.'
+	Add-Line '  [오류]  다른 모드의 오류를 서버 시작 실패로 키울 수 있습니다.'
+	Add-Line '  [WX78]  WX-78 모듈을 추가합니다. 위 1번의 자리 계산에 들어갑니다.'
+	Add-Line '  [요리]  냄비나 요리 계산식을 건드립니다.'
+	Add-Line '  [상자]  상자 내부를 건드립니다. 왈리가 상자를 못 읽을 때 의심하세요.'
+	Add-Line ''
+	Add-Line '  켜짐 O = 서버에 켜져 있음 / - = 구독만 해 놓고 꺼 둠 / ? = 알 수 없음'
+	Add-Line ''
+
+	$file = Join-Path $PackageRoot '모드점검.txt'
+	try {
+		[IO.File]::WriteAllText($file, (Protect-Text (($script:reportLines) -join "`r`n")),
+			(New-Object System.Text.UTF8Encoding($true)))
+		Write-Host ''
+		Write-Host ('저장했습니다: ' + $file) -ForegroundColor Green
+		Write-Host '이 파일을 그대로 보내 주시면 됩니다.' -ForegroundColor Green
+		try { Start-Process notepad.exe $file } catch { }
+	} catch {
+		Write-Fail ('저장하지 못했습니다: ' + $_.Exception.Message)
+	}
+
+	Write-Host ''
+}
+
 if ($env:NPCHOF_DOTSOURCE_ONLY -eq '1') { return }
 
 if ($Action -eq 'diagnose') {
@@ -1088,6 +1558,11 @@ if ($Action -eq 'collectmods') {
 
 if ($Action -eq 'lasterror') {
 	Invoke-LastError
+	exit 0
+}
+
+if ($Action -eq 'modcheck') {
+	Invoke-ModCheck $ModFolder
 	exit 0
 }
 

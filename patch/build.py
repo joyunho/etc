@@ -11,6 +11,7 @@ file for NPC Friends, then assembles the ready-to-run zip:
         collect.bat            <- pack everything needed for support into one zip
         collectmods.bat        <- pack the code of every installed mod
         lasterror.bat          <- find why the server will not start
+        modcheck.bat           <- list which mods collide with which
         README.txt
         files/npc_hof_cooking.lua
         tools/patch.ps1
@@ -242,6 +243,37 @@ NPC Friends 의 왈리 NPC 가 Heap of Foods 를 비롯한 음식 모드의 요�
     ...\\steamapps\\workshop\\content\\322330
 
 
+[ 어떤 모드가 문제인지 알고 싶을 때 - modcheck.bat ]
+
+  modcheck.bat 을 더블클릭하면, 설치된 모드의 lua 를 전부 읽어서
+  모드끼리 부딪칠 수 있는 지점만 골라 모드점검.txt 로 뽑아 줍니다.
+
+    1  서버가 안 켜지게 만들 수 있는 것
+       WX-78 모듈 자리 계산. 바닐라 wx78_moduledefs.lua 안에
+         assert(module_netid < 64, "To support additional WX modules, ...")
+       가 있고 바닐라가 23 개를 먼저 씁니다. 모드 몫은 40 개뿐이라,
+       넘기면 서버가 통째로 안 켜집니다. 어느 모드가 몇 개를 쓰는지 셉니다.
+       오류 화면을 자기 코드로 바꾸는 모드도 여기서 짚습니다. 그런 모드가
+       있으면 다른 모드의 사소한 오류 하나가 "서버 시작 실패" 로 커집니다.
+
+    2  왈리 요리에 끼어들 수 있는 모드
+       상자 내부, 냄비, 요리 계산식을 건드리는 모드. 그리고 같은 냄비 요리
+       이름을 두 모드가 동시에 쓰는 경우 (나중에 켜진 쪽만 남습니다).
+
+    3  로그가 직접 이름을 부른 모드
+       가장 확실한 증거입니다. 최근 로그에서 MOD ERROR 로 찍혔거나
+       오류 스택에 그 모드 파일이 나온 것만 추립니다.
+
+    4  참고
+       낡은 api_version, 서버에선 아무 일도 안 하는 client_only 모드,
+       서버에 켜 놓았는데 설치가 안 된 모드.
+
+  modoverrides.lua 를 찾으면 "서버에 켜져 있는 모드"만 계산에 넣습니다.
+  구독만 해 놓고 꺼 둔 모드는 아무 자리도 차지하지 않기 때문입니다.
+
+  모드를 못 찾으면 모드가 들어 있는 폴더를 modcheck.bat 위로 드래그하세요.
+
+
 [ 서버가 아예 안 켜질 때 - lasterror.bat ]
 
   "데디케이티드 서버 시작 실패" 가 뜨면 lasterror.bat 을 더블클릭하세요.
@@ -279,7 +311,7 @@ def main() -> None:
     )
 
     # cmd.exe wants CRLF; these two are ASCII-only on purpose.
-    for name in ("install.bat", "restore.bat", "diagnose.bat", "collect.bat", "collectmods.bat", "lasterror.bat"):
+    for name in ("install.bat", "restore.bat", "diagnose.bat", "collect.bat", "collectmods.bat", "lasterror.bat", "modcheck.bat"):
         text = (PATCH / "templates" / name).read_text(encoding="utf-8")
         text.encode("ascii")  # fail the build if Korean sneaks in
         (BUILD / name).write_bytes(text.replace("\n", "\r\n").encode("ascii"))

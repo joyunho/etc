@@ -221,6 +221,120 @@ Write-Host '=== 9. a planner without the expected return is refused ==='
 $ok = Install-One $modDir
 Check 'refuses to guess when the file shape is unknown' (-not $ok)
 
+Write-Host ''
+Write-Host '=== 10. modcheck: which mod is the problem ==='
+
+# A miniature mod library that contains every collision modcheck looks for.
+$mcRoot = Join-Path $sandbox 'mods'
+$klei   = Join-Path $sandbox 'Klei/DoNotStarveTogether'
+New-Item -ItemType Directory -Force -Path (Join-Path $klei 'Cluster_1/Master') | Out-Null
+
+function New-FakeMod($id, $info, $code) {
+	$dir = Join-Path $mcRoot ('workshop-' + $id)
+	New-Item -ItemType Directory -Force -Path $dir | Out-Null
+	[IO.File]::WriteAllText((Join-Path $dir 'modinfo.lua'), $info)
+	[IO.File]::WriteAllText((Join-Path $dir 'modmain.lua'), $code)
+}
+
+$wxHeavy = (1..25 | ForEach-Object { "defs.AddNewModuleDefinition(M$_)" }) -join "`n"
+$wxSmall = (1..20 | ForEach-Object { "defs.AddNewModuleDefinition(E$_)" }) -join "`n"
+
+New-FakeMod '900000001' "name = `"WX Heavy`"`nversion = `"1.0`"`napi_version = 10" $wxHeavy
+New-FakeMod '900000002' "name = `"WX Small`"`nversion = `"1.0`"`napi_version = 10" $wxSmall
+New-FakeMod '900000003' "name = `"Error Hijacker`"`nversion = `"1.0`"`napi_version = 10" 'SetGlobalErrorWidget(msg)'
+New-FakeMod '900000004' "name = `"Chesty`"`nversion = `"1.0`"`napi_version = 10" @'
+AddComponentPostInit("container", function(self) end)
+AddPrefabPostInit("treasurechest", function(inst) end)
+AddCookerRecipe("cookpot", { name = "stew_a", test = function() end })
+'@
+New-FakeMod '900000005' "name = `"Foody`"`nversion = `"1.0`"`napi_version = 10" @'
+AddCookerRecipe("cookpot", { name = "stew_a", test = function() end })
+AddCookerRecipe("cookpot", { name = "stew_b", test = function() end })
+AddRecipe("oldstyle", {})
+'@
+New-FakeMod '900000006' "name = `"Clientside`"`nversion = `"1.0`"`napi_version = 6`nclient_only_mod = true" 'print("hi")'
+
+[IO.File]::WriteAllText((Join-Path $klei 'Cluster_1/modoverrides.lua'), @'
+return {
+  ["workshop-900000001"] = { enabled = true },
+  ["workshop-900000002"] = { enabled = false },
+  ["workshop-900000003"] = { enabled = true },
+  ["workshop-900000004"] = { enabled = true },
+  ["workshop-900000005"] = { enabled = true },
+  ["workshop-900000007"] = { enabled = true },
+}
+'@)
+
+[IO.File]::WriteAllText((Join-Path $klei 'Cluster_1/Master/server_log.txt'), @'
+[00:00:04]: Loading mod: workshop-900000001 (WX Heavy) Version:1.0
+[00:00:05]: MOD ERROR: workshop-900000005 (Foody)
+    ../mods/workshop-900000003/gemscripts/tools/dynamictilemanager.lua(188,1) in function 'error'
+'@)
+
+# Get-KleiRoots builds Windows-shaped paths; point it at the sandbox instead.
+function Get-KleiRoots { @($klei) }
+
+$state = Get-EnabledMods
+Check 'modoverrides: enabled mod is read as on'  ($state['900000001'] -eq $true)
+Check 'modoverrides: disabled mod is read as off' ($state['900000002'] -eq $false)
+Check 'modoverrides: a mod with no folder is still listed' ($state.ContainsKey('900000007'))
+
+$blamed = Get-ModBlameFromLogs
+Check 'logs: MOD ERROR names the mod'            ($blamed.ContainsKey('900000005'))
+Check 'logs: a stack frame names the mod'        ($blamed.ContainsKey('900000003'))
+Check 'logs: an innocent mod is not blamed'      (-not $blamed.ContainsKey('900000001'))
+
+$code = Measure-ModCode (Join-Path $mcRoot 'workshop-900000001')
+Check 'code: WX-78 registrations are counted'    ($code.Hits['wx78'] -eq 25) ("got " + $code.Hits['wx78'])
+
+$code4 = Measure-ModCode (Join-Path $mcRoot 'workshop-900000004')
+Check 'code: container hook is seen'             ($code4.Hits['container'] -ge 1)
+Check 'code: chest prefab hook is seen'          ($code4.Hits['chest'] -ge 1)
+Check 'code: crock pot dish name is captured'    ($code4.CookRecipes -contains 'stew_a')
+
+$code5 = Measure-ModCode (Join-Path $mcRoot 'workshop-900000005')
+Check 'code: deprecated AddRecipe is seen'       ($code5.Hits['oldapi'] -ge 1)
+Check 'code: AddRecipe2 is not counted as old'   ($code5.Hits['oldapi'] -eq 1) ("got " + $code5.Hits['oldapi'])
+
+# The whole report. 45 WX modules are installed but only 25 are switched on,
+# so the budget must come out under the limit, not over it.
+$script:reportLines = New-Object System.Collections.Generic.List[string]
+Invoke-ModCheck $mcRoot | Out-Null
+$text = ($script:reportLines -join "`n")
+
+Check 'report: counts only the mods that are switched on' `
+	($text -match '개수: 약 25 개') 'expected 25, not 45'
+Check 'report: says the budget is fine when it is' `
+	($text -match '자리 남았습니다')
+Check 'report: names the mod the log blamed' `
+	($text -match 'workshop-900000005[\s\S]{0,200}MOD ERROR')
+Check 'report: flags the error-handler hijacker' `
+	($text -match 'workshop-900000003')
+Check 'report: reports the duplicated dish name' `
+	($text -match 'stew_a')
+Check 'report: reports a mod enabled but not installed' `
+	($text -match 'workshop-900000007')
+Check 'report: marks the switched-off mod as off' `
+	($text -match 'workshop-900000002\s+10\s+-')
+Check 'report: does not blame the disabled WX mod' `
+	(-not ($text -match 'workshop-900000002\s+약'))
+
+# ...and with that mod switched on, the same library must trip the limit.
+[IO.File]::WriteAllText((Join-Path $klei 'Cluster_1/modoverrides.lua'),
+	((Get-Content -LiteralPath (Join-Path $klei 'Cluster_1/modoverrides.lua') -Raw) `
+		-replace '"workshop-900000002"\] = \{ enabled = false', '"workshop-900000002"] = { enabled = true'))
+
+$script:reportLines = New-Object System.Collections.Generic.List[string]
+Invoke-ModCheck $mcRoot | Out-Null
+$text2 = ($script:reportLines -join "`n")
+Check 'report: over the WX-78 limit is reported as a startup failure' `
+	($text2 -match '개수: 약 45 개' -and $text2 -match '모자랍니다')
+
+foreach ($stray in @('모드점검.txt')) {
+	$f = Join-Path $package $stray
+	if (Test-Path -LiteralPath $f) { Remove-Item -LiteralPath $f -Force }
+}
+
 # ── cleanup ─────────────────────────────────────────────────────────────────
 Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
 $bk = Join-Path $package '_backup'
