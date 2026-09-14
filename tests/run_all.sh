@@ -79,6 +79,16 @@ for f in korean_patch/modinfo.lua korean_patch/modmain.lua; do
 	if "$LUAC" -p "$f" 2>/dev/null; then ok "$f"; else bad "$f"; fi
 done
 if "$LUA" tests/test_korean.lua >/dev/null; then ok "tests/test_korean.lua"; else bad "tests/test_korean.lua"; fi
+# The one that matters: the patch run inside the sandbox Klei actually gives a
+# mod, with the name list read out of Klei's own mods.lua.
+DSTSRC=${DSTSRC:-/tmp/claude-0/-home-user-etc/535ff019-a8c4-5c97-985d-74a2ab67890d/scratchpad}
+if [ ! -f "$DSTSRC/mods.lua" ]; then
+	printf '   \033[33mSKIP\033[0m tests/test_korean_env.lua (set $DSTSRC to DST scripts)\n'
+elif "$LUA" tests/test_korean_env.lua "$DSTSRC" >/dev/null; then
+	ok "tests/test_korean_env.lua"
+else
+	bad "tests/test_korean_env.lua"
+fi
 
 step "Bisect tests (simulated server)"
 if ! command -v "$PWSH" >/dev/null 2>&1; then

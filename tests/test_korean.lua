@@ -36,7 +36,13 @@ local function NewEnv()
 			START_PUSHING = "Push",
 		},
 	}
+	-- GLOBAL is the game's _G, so the Lua standard library is in it. The mod
+	-- sandbox itself has almost none of it -- see tests/test_korean_env.lua,
+	-- which builds that sandbox from Klei's own source.
 	return {
+		pcall = pcall, select = select, type = type, error = error,
+		tostring = tostring, pairs = pairs, ipairs = ipairs,
+		table = table, string = string, math = math,
 		STRINGS = STRINGS,
 		KnownModIndex = {
 			IsModEnabled      = function(self, name) return enabled_mods[name] == true end,

@@ -11,6 +11,15 @@
 --   * 모드 한 개씩 pcall 로 감쌉니다 (하나가 실패해도 나머지는 적용됨)
 --   * 전체를 다시 pcall 로 감쌉니다 (그래도 실패하면 조용히 아무것도 안 함)
 
+-- DST 의 모드 환경(mods.lua 의 CreateEnvironment)은 메타테이블이 없는 평평한
+-- 표입니다. 그 표에 든 이름만 보입니다: pairs, ipairs, print, math, table,
+-- type, string, tostring, require, Class, TUNING, GLOBAL, modname, MODROOT.
+-- pcall 도 select 도 error 도 거기 없습니다. 그냥 쓰면 nil 을 부르게 되고
+-- 그 자리에서 모드가 죽습니다. 그래서 GLOBAL 에서 직접 꺼내 씁니다.
+local pcall = GLOBAL.pcall
+local select = GLOBAL.select
+local type = GLOBAL.type
+
 local function Translate()
 	local STRINGS = GLOBAL.STRINGS
 	local Index = GLOBAL.KnownModIndex
