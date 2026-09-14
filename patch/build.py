@@ -15,6 +15,7 @@ file for NPC Friends, then assembles the ready-to-run zip:
         bisect.bat             <- halve the mod list until the culprit is found
         translate.bat          <- collect every mod's text for translating
         korean.bat             <- switch mods to the Korean they already ship
+        korean_CHECK.bat       <- show those settings without changing anything
         hangul.bat             <- install the Korean string patch into the game
         README.txt
         files/npc_hof_cooking.lua
@@ -345,16 +346,37 @@ NPC Friends 의 왈리 NPC 가 Heap of Foods 를 비롯한 음식 모드의 요�
   받는 값 중 한국어에 해당하는 것을 골라 modoverrides.lua 에 적습니다.
   설정값 하나를 바꾸는 것이라 모드가 깨질 수 없습니다.
 
-  같이 나오는 한국어켜기.txt 는 모드를 셋으로 나눠 보여 줍니다.
+  같이 나오는 한국어켜기.txt 는 모드를 다섯으로 나눠 보여 줍니다.
 
-    한국어로 바꿨습니다        설정으로 켜진 것
+    한국어로 바꿨습니다        설정으로 켜진 것. 바꾸기 전 값도 같이 적습니다.
+    이미 한국어              손댈 것이 없던 것
+    modoverrides 에 없음     이 클러스터에서 안 켜져 있거나 블록이 아직 없음
     설정으로는 못 켜는 모드    한국어 파일은 있는데 고르는 설정이 없음.
                                이런 모드는 게임 언어를 한국어로 두면
                                알아서 따라오는 경우가 많습니다.
     한국어가 아예 없는 모드    이것만 진짜로 번역이 필요합니다.
 
+  고치기 전에 지금 상태만 보고 싶으면 korean_CHECK.bat 을 더블클릭하세요.
+  파일은 한 글자도 안 건드리고 한국어상태.txt 만 뽑습니다.
+
   되돌리시려면 korean_UNDO.bat 을 더블클릭하세요. 처음 실행할 때 떠 둔 백업으로
   돌려놓습니다 (두 번 실행해도 백업은 덮어쓰지 않습니다).
+
+
+  [ 게임 안 모드 설정에서 바꿔도 안 되는 이유 ]
+
+  목록에 [서버 설정이 접속자에게도 내려감] 이라고 붙는 모드가 있습니다.
+  modinfo 에 all_clients_require_mod = true 라고 적힌 모드들입니다.
+
+  이런 모드는 서버에 접속하는 순간 서버가 자기 설정을 통째로 내려보내고,
+  내 게임은 그것을 그대로 씁니다. 그래서 게임 안 모드 설정 화면에서 혼자
+  언어를 한국어로 바꿔 놔도 접속하면 다시 서버 값으로 덮입니다.
+  (Klei 의 networking.lua DownloadMods 가 SetTempModConfigData 를 부르고,
+   modindex.lua 의 GetModConfigurationOptions_Internal 이 temp_enabled 인
+   모드에 대해 그 값을 돌려줍니다.)
+
+  즉 이런 모드는 modoverrides.lua 가 전부입니다. korean.bat 을 돌리고
+  서버를 다시 켜야 바뀝니다.
 
 
 [ 모드 글자를 한국어로 - hangul.bat ]
@@ -436,24 +458,25 @@ def main() -> None:
     # 되돌리기용 파일. bisect.bat stop 처럼 뒤에 말을 붙여야 하는 것들은
     # 더블클릭으로는 그 말을 못 붙입니다. 명령창을 열 필요가 없도록
     # "stop 을 붙인 채로 실행하는" 파일을 따로 만들어 둡니다.
-    for base, undo, what in (
-        ("hangul.bat", "hangul_UNDO.bat", "remove the Korean string patch"),
-        ("korean.bat", "korean_UNDO.bat", "put the mod language settings back"),
-        ("bisect.bat", "bisect_UNDO.bat", "stop the search and restore modoverrides.lua"),
+    for base, made, word, what in (
+        ("hangul.bat", "hangul_UNDO.bat", "stop", "remove the Korean string patch"),
+        ("korean.bat", "korean_UNDO.bat", "stop", "put the mod language settings back"),
+        ("bisect.bat", "bisect_UNDO.bat", "stop", "stop the search and restore modoverrides.lua"),
+        ("korean.bat", "korean_CHECK.bat", "check", "see what the mod language settings are right now, changing nothing"),
     ):
         text = (PATCH / "templates" / base).read_text(encoding="utf-8")
-        text = text.replace('-Arg "%~1"', '-Arg "stop"')
+        text = text.replace('-Arg "%~1"', f'-Arg "{word}"')
         text = text.replace(
             "rem ===========================================================================\n",
             "rem ===========================================================================\n"
-            f"rem  THIS IS THE UNDO FILE. Double-click it to {what}.\n"
-            f"rem  It is {base} with 'stop' already filled in, because double-clicking\n"
+            f"rem  Double-click this to {what}.\n"
+            f"rem  It is {base} with '{word}' already filled in, because double-clicking\n"
             "rem  cannot pass a word to a .bat file.\n"
             "rem ===========================================================================\n",
             1,
         )
         text.encode("ascii")
-        (BUILD / undo).write_bytes(text.replace("\n", "\r\n").encode("ascii"))
+        (BUILD / made).write_bytes(text.replace("\n", "\r\n").encode("ascii"))
 
     (BUILD / "README.txt").write_bytes(
         b"\xef\xbb\xbf" + README.replace("\n", "\r\n").encode("utf-8")

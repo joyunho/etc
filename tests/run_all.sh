@@ -58,13 +58,14 @@ fi
 step "Launchers"
 # Double-clicking a .bat cannot pass it a word, so every action that needs
 # "stop" ships a second file with it already filled in.
-for pair in "hangul_UNDO.bat hangul" "korean_UNDO.bat korean" "bisect_UNDO.bat bisect"; do
-	set -- $pair
+for triple in "hangul_UNDO.bat hangul stop" "korean_UNDO.bat korean stop" \
+              "bisect_UNDO.bat bisect stop" "korean_CHECK.bat korean check"; do
+	set -- $triple
 	f="build/NPC_HOF_Patch/$1"
 	if [ ! -f "$f" ]; then
 		bad "$1 is missing"
-	elif ! grep -q -- "-Action $2 -Arg \"stop\"" "$f"; then
-		bad "$1 does not pass stop"
+	elif ! grep -q -- "-Action $2 -Arg \"$3\"" "$f"; then
+		bad "$1 does not pass $3"
 	else
 		ok "$1"
 	fi

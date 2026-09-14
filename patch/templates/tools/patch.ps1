@@ -840,6 +840,38 @@ function Resolve-DuplicateMods($list) {
 }
 
 # modinfo.lua 에서 이름과 버전만 살짝 긁어옵니다 (lua 를 실행하지는 않습니다).
+# 이름을 표에서 꺼내 쓰는 모드가 있습니다.
+#
+#   name = language["A"]                        <- Achievement & Level
+#   name = ChooseTranslationTable(STRINGS.NAME) <- Heap of Foods
+#
+# 그 표가 같은 modinfo.lua 안에 있으면 첫 번째 값(보통 영어)을 꺼내 옵니다.
+# 못 찾으면 $null 을 돌려주고, 부르는 쪽이 workshop-번호로 대신합니다.
+function Resolve-NameLookup($text, $expr) {
+	$key = $null
+	$m = [regex]::Match($expr, '\[\s*"([A-Za-z_][\w ]{0,40})"\s*\]')
+	if ($m.Success) {
+		$key = $m.Groups[1].Value
+	} else {
+		$m = [regex]::Match($expr, '\.([A-Za-z_]\w{0,40})')
+		if ($m.Success) { $key = $m.Groups[1].Value }
+	}
+	if ([string]::IsNullOrEmpty($key)) { return $null }
+
+	# 각 줄을 괄호로 감싼 이유: PowerShell 에서 쉼표는 + 보다 먼저 묶입니다.
+	# 괄호가 없으면 'a' + $x + 'b', 'c' 가 'a' + $x + ('b','c') 로 읽혀
+	# 정규식이 아니라 배열이 만들어집니다.
+	foreach ($pat in @(
+		('\[\s*"' + [regex]::Escape($key) + '"\s*\]\s*=\s*"([^"]{1,120})"'),
+		('(?m)^\s*' + [regex]::Escape($key) + '\s*=\s*"([^"]{1,120})"'),
+		('(?m)^\s*' + [regex]::Escape($key) + '\s*=\s*\{\s*"([^"]{1,120})"')
+	)) {
+		$hit = [regex]::Match($text, $pat)
+		if ($hit.Success) { return $hit.Groups[1].Value }
+	}
+	return $null
+}
+
 function Read-ModInfo($modPath) {
 	$info = [pscustomobject]@{ Name = ''; Version = ''; Api = ''; ClientOnly = '' }
 
@@ -865,9 +897,20 @@ function Read-ModInfo($modPath) {
 		# 거기서 끊습니다. 안 그러면 icon = "preview.tex" 를 이름으로 집습니다.
 		$line = [regex]::Match($text, '(?m)^name\s*=\s*(.+?)(?=\s+[A-Za-z_]\w*\s*=|$)')
 		if ($line.Success) {
-			$quoted = [regex]::Matches($line.Groups[1].Value, '"([^"]{1,120})"')
-			if ($quoted.Count -gt 0) {
-				$info.Name = $quoted[$quoted.Count - 1].Groups[1].Value
+			$raw   = $line.Groups[1].Value.Trim()
+			$found = $null
+
+			# 따옴표로 시작하지 않으면 표에서 꺼내 쓰는 모양일 수 있습니다.
+			# language["A"] 의 "A" 를 이름으로 집지 않도록 이것부터 봅니다.
+			if (-not $raw.StartsWith('"')) { $found = Resolve-NameLookup $text $raw }
+
+			if ($found) {
+				$info.Name = $found
+			} else {
+				$quoted = [regex]::Matches($raw, '"([^"]{1,120})"')
+				if ($quoted.Count -gt 0) {
+					$info.Name = $quoted[$quoted.Count - 1].Groups[1].Value
+				}
 			}
 		}
 	} catch { }
@@ -2759,10 +2802,56 @@ function Set-ModConfigOption($files, $id, $key, $value) {
 	return $done
 }
 
+# modoverrides.lua 에 지금 적혀 있는 값을 읽어 옵니다. 안 적혀 있으면 $null.
+# 바꾸기 전에 "지금은 뭐라고 되어 있는지" 를 보여 주려고 씁니다.
+function Get-ModConfigOption($files, $id, $key) {
+	foreach ($file in $files) {
+		$text = $null
+		try { $text = [IO.File]::ReadAllText($file) } catch { continue }
+		if ([string]::IsNullOrEmpty($text)) { continue }
+
+		foreach ($b in (Split-ModBlocks $text)) {
+			if ($b.Id -ne $id) { continue }
+			$body = $text.Substring($b.Start, $b.Length)
+			$m = [regex]::Match($body, '(?:\[\s*")?' + [regex]::Escape($key) + '(?:"\s*\])?\s*=\s*(?:"([^"]*)"|([\w.-]+))')
+			if ($m.Success) {
+				if ($m.Groups[1].Success) { return $m.Groups[1].Value }
+				return $m.Groups[2].Value
+			}
+		}
+	}
+	return $null
+}
+
+# 이 모드의 설정을 누가 정하는지. Klei 의 코드를 그대로 따라간 것입니다.
+#
+#   shared : modinfo 에 all_clients_require_mod = true.
+#            접속할 때 서버가 자기 설정을 통째로 내려보내고, 클라이언트는
+#            그걸 씁니다. 그래서 게임 안 모드 설정에서 혼자 한국어로 바꿔도
+#            소용이 없고, modoverrides.lua 가 전부입니다.
+#              networking.lua  DownloadMods -> TempEnable + SetTempModConfigData
+#              modindex.lua    GetModConfigurationOptions_Internal
+#                              -> temp_enabled 이면 temp_config_options 를 씀
+#   client : client_only_mod = true. 서버와 상관없이 내 게임 설정만 봅니다.
+#   server : 그 밖. 서버에서만 도는 모드라 modoverrides.lua 만 보면 됩니다.
+function Get-ModConfigOwner($modPath) {
+	$file = Join-Path $modPath 'modinfo.lua'
+	if (-not (Test-Path -LiteralPath $file)) { return 'server' }
+	$text = $null
+	try { $text = [IO.File]::ReadAllText($file) } catch { return 'server' }
+	if ([regex]::IsMatch($text, '(?m)^\s*client_only_mod\s*=\s*true')) { return 'client' }
+	if ([regex]::IsMatch($text, '(?m)^\s*all_clients_require_mod\s*=\s*true')) { return 'shared' }
+	return 'server'
+}
+
 $KOREAN_BACK = '_korean_backup'
 
 function Invoke-SetKorean($arg, $root) {
-	Write-Head '모드에 들어 있는 한국어 켜기'
+	if ($arg -match '^(check|확인|보기|dry|미리)$') {
+		Write-Head '모드 언어 설정 - 지금 상태만 보기 (아무것도 안 고칩니다)'
+	} else {
+		Write-Head '모드에 들어 있는 한국어 켜기'
+	}
 
 	$script:reportLines = New-Object System.Collections.Generic.List[string]
 	$backup = Join-Path $PackageRoot $KOREAN_BACK
@@ -2774,6 +2863,9 @@ function Invoke-SetKorean($arg, $root) {
 		Write-Host ''
 		return
 	}
+
+	# korean.bat check  : 고치지 않고 지금 상태만 보여 줍니다.
+	$dryRun = ($arg -match '^(check|확인|보기|dry|미리)$')
 
 	if ($arg -match '^(stop|restore|undo|되돌|취소)$') {
 		$n = 0
@@ -2800,7 +2892,7 @@ function Invoke-SetKorean($arg, $root) {
 	# 되돌릴 수 있게 먼저 백업.
 	# 이미 백업이 있으면 덮어쓰지 않습니다. 두 번째로 실행했을 때 덮어쓰면
 	# 백업이 "이미 바꾼 파일"이 되어 버려서 되돌릴 수 없게 됩니다.
-	if (-not (Test-Path -LiteralPath $backup)) {
+	if (-not $dryRun -and -not (Test-Path -LiteralPath $backup)) {
 		New-Item -ItemType Directory -Force -Path $backup | Out-Null
 		$k = 0
 		foreach ($f in $files) {
@@ -2810,12 +2902,16 @@ function Invoke-SetKorean($arg, $root) {
 		}
 	}
 
-	Add-Line 'DST 모드 한국어 켜기'
+	Add-Line $(if ($dryRun) { 'DST 모드 한국어 - 지금 상태만 보기' } else { 'DST 모드 한국어 켜기' })
 	Add-Line ((Get-Date).ToString('yyyy-MM-dd HH:mm:ss'))
+	Add-Line ''
+	Add-Line '보고 있는 파일:'
+	foreach ($f in $files) { Add-Line ('  ' + $f) }
 	Add-Line ''
 
 	$switched = New-Object System.Collections.Generic.List[string]
 	$already  = New-Object System.Collections.Generic.List[string]
+	$offside  = New-Object System.Collections.Generic.List[string]
 	$manual   = New-Object System.Collections.Generic.List[string]
 	$nothing  = New-Object System.Collections.Generic.List[string]
 	$index    = 0
@@ -2833,11 +2929,30 @@ function Invoke-SetKorean($arg, $root) {
 		$ko = Find-KoreanOption $mod.Path
 
 		if ($ko.Value) {
+			$who  = Get-ModConfigOwner $mod.Path
+			$now  = Get-ModConfigOption $files $mod.Number $ko.Option
+			$mark = $(switch ($who) { 'shared' { '  [서버 설정이 접속자에게도 내려감]' }
+			                          'client' { '  [내 게임 설정만 봄]' }
+			                          default  { '' } })
+
+			if ($now -eq $ko.Value) {
+				$already.Add(('  ' + $mod.Number.PadRight(12) + ($ko.Option + ' = "' + $now + '"').PadRight(26) + $name + $mark))
+				continue
+			}
+
+			$from = $(if ($now -eq $null) { '(안 적혀 있음 -> 모드 기본값)' } else { '"' + $now + '"' })
+
+			if ($dryRun) {
+				# 고치지 않고, 고치면 어떻게 되는지만 적습니다.
+				$switched.Add(('  ' + $mod.Number.PadRight(12) + ($ko.Option + ' : ' + $from + ' -> "' + $ko.Value + '"').PadRight(46) + $name + $mark))
+				continue
+			}
+
 			$n = Set-ModConfigOption $files $mod.Number $ko.Option $ko.Value
 			if ($n -gt 0) {
-				$switched.Add(('  ' + $mod.Number.PadRight(12) + ($ko.Option + ' = "' + $ko.Value + '"').PadRight(24) + $name))
+				$switched.Add(('  ' + $mod.Number.PadRight(12) + ($ko.Option + ' : ' + $from + ' -> "' + $ko.Value + '"').PadRight(46) + $name + $mark))
 			} else {
-				$already.Add(('  ' + $mod.Number.PadRight(12) + '(이 서버에 안 켜져 있음)      ' + $name))
+				$offside.Add(('  ' + $mod.Number.PadRight(12) + ($ko.Option + ' = "' + $ko.Value + '" 로 바꾸면 되는데').PadRight(46) + $name + $mark))
 			}
 			continue
 		}
@@ -2851,10 +2966,26 @@ function Invoke-SetKorean($arg, $root) {
 	}
 	Write-Progress -Activity '모드 설정 확인 중' -Completed
 
-	Add-Line ('━━ 한국어로 바꿨습니다 (' + $switched.Count + ' 개) ━━')
+	Add-Line $(if ($dryRun) { '━━ 한국어로 바꿀 수 있는 모드 (' + $switched.Count + ' 개) ━━' }
+	           else            { '━━ 한국어로 바꿨습니다 (' + $switched.Count + ' 개) ━━' })
 	Add-Line ''
 	if ($switched.Count -eq 0) { Add-Line '  없습니다.' }
 	foreach ($l in $switched) { Add-Line $l }
+
+	Add-Line ''
+	Add-Line ('━━ 이미 한국어로 되어 있는 모드 (' + $already.Count + ' 개) ━━')
+	Add-Line ''
+	if ($already.Count -eq 0) { Add-Line '  없습니다.' }
+	foreach ($l in $already) { Add-Line $l }
+
+	Add-Line ''
+	Add-Line ('━━ 이 서버 modoverrides.lua 에 블록이 없는 모드 (' + $offside.Count + ' 개) ━━')
+	Add-Line ''
+	Add-Line '  이 모드들은 이 클러스터에서 안 켜져 있거나, 설정 블록이 아직 없습니다.'
+	Add-Line '  서버에서 켜고 나서 다시 실행해 주세요.'
+	Add-Line ''
+	if ($offside.Count -eq 0) { Add-Line '  없습니다.' }
+	foreach ($l in $offside) { Add-Line $l }
 
 	Add-Line ''
 	Add-Line ('━━ 한국어 파일은 있는데 설정으로는 못 켜는 모드 (' + $manual.Count + ' 개) ━━')
@@ -2872,9 +3003,15 @@ function Invoke-SetKorean($arg, $root) {
 	foreach ($l in $nothing) { Add-Line $l }
 
 	Add-Line ''
-	Add-Line '되돌리시려면: korean.bat stop'
+	Add-Line '[서버 설정이 접속자에게도 내려감] 이 붙은 모드는,'
+	Add-Line '게임 안 모드 설정에서 혼자 한국어로 바꿔도 소용이 없습니다.'
+	Add-Line '접속하는 순간 서버가 자기 설정을 통째로 내려보내기 때문입니다.'
+	Add-Line '여기(modoverrides.lua)에서 바꾸고 서버를 다시 켜야 합니다.'
+	Add-Line ''
+	Add-Line '지금 상태만 보시려면: korean.bat check   (korean_CHECK.bat)'
+	Add-Line '되돌리시려면:        korean.bat stop    (korean_UNDO.bat)'
 
-	$file = Join-Path $PackageRoot '한국어켜기.txt'
+	$file = Join-Path $PackageRoot $(if ($dryRun) { '한국어상태.txt' } else { '한국어켜기.txt' })
 	try {
 		[IO.File]::WriteAllText($file, (Protect-Text (($script:reportLines) -join "`r`n")),
 			(New-Object System.Text.UTF8Encoding($true)))
@@ -2884,7 +3021,14 @@ function Invoke-SetKorean($arg, $root) {
 	} catch { }
 
 	Write-Host ''
-	Write-Host ('  ' + $switched.Count + ' 개 모드를 한국어로 바꿨습니다. 서버를 다시 켜면 적용됩니다.') -ForegroundColor Green
+	if ($dryRun) {
+		Write-Host ('  바꾸지 않았습니다. 바꿀 수 있는 모드 ' + $switched.Count + ' 개, 이미 한국어 ' + $already.Count + ' 개.') -ForegroundColor Cyan
+		Write-Host '  실제로 바꾸시려면 korean.bat 을 더블클릭하세요.'
+	} else {
+		Write-Host ('  ' + $switched.Count + ' 개 모드를 한국어로 바꿨습니다. 서버를 다시 켜면 적용됩니다.') -ForegroundColor Green
+		if ($already.Count -gt 0) { Write-Host ('  ' + $already.Count + ' 개는 이미 한국어였습니다.') }
+		if ($offside.Count -gt 0) { Write-Host ('  ' + $offside.Count + ' 개는 이 서버 modoverrides.lua 에 블록이 없어 못 건드렸습니다.') -ForegroundColor Yellow }
+	}
 	Write-Host ''
 }
 

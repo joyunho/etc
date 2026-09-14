@@ -644,6 +644,163 @@ if (Test-Path -LiteralPath $kb) { Remove-Item -LiteralPath $kb -Recurse -Force }
 
 
 Write-Host ''
+Write-Host '=== 12b. korean check: report the settings without writing anything ==='
+
+$cRoot = Join-Path $sandbox 'koc'
+$cKlei = Join-Path $sandbox 'kocklei/Klei/DoNotStarveTogether/Cluster_1'
+New-Item -ItemType Directory -Force -Path $cKlei | Out-Null
+function Get-KleiRoots { @((Join-Path $sandbox 'kocklei/Klei/DoNotStarveTogether')) }
+
+function New-CoMod($id, $info) {
+	$d = Join-Path $cRoot ('workshop-' + $id)
+	New-Item -ItemType Directory -Force -Path $d | Out-Null
+	[IO.File]::WriteAllText((Join-Path $d 'modinfo.lua'), $info, (New-Object Text.UTF8Encoding($false)))
+	return $d
+}
+
+# The Achievement & Level shape, down to the helpers it uses: every label is a
+# lookup into a `language` table, the option table is inline, and the Korean
+# entry is spelled out in English. It is `all_clients_require_mod`, which is the
+# whole point -- the server decides this one for everybody.
+New-CoMod '900000001' @'
+local multilingual = {
+	en = {
+		["A"] = "Achievement & Level",
+		["Language"] = "Language",
+	},
+	kr = {
+		["A"] = "업적과 레벨",
+		["Language"] = "언어",
+	},
+}
+local language = ChooseTranslationTable and ChooseTranslationTable(multilingual) or multilingual.en
+local function title(t) return { name = t, options = {{description = "", data = 0}}, default = 0 } end
+name = language["A"]
+version = "7.3.6"
+api_version = 10
+dst_compatible = true
+all_clients_require_mod = true
+configuration_options =
+{
+	title(language["GENERAL SETTINGS"]),
+	{
+		name = "LANGUAGE",
+		label = language["Language"],
+		options = {
+			{description ="English", data = "en"},
+			{description ="简体", data = "chs"},
+			{description ="Korean", data = "kr"},
+		},
+		default = "en",
+		hover = language["LanguageInfo"],
+	},
+}
+'@
+
+# A client-only mod: the server has no say, the player picks it in the menu.
+New-CoMod '900000002' @'
+name = "Client Thing"
+version = "1.0"
+api_version = 10
+client_only_mod = true
+configuration_options = {
+	{ name = "language", label = "Language",
+	  options = { {description = "English", data = "en"}, {description = "한국어", data = "kr"} },
+	  default = "en" },
+}
+'@
+
+[IO.File]::WriteAllText((Join-Path $cKlei 'modoverrides.lua'), @'
+return {
+  ["workshop-900000001"] = { enabled = true, configuration_options = { LANGUAGE = "en", REFUND = 0.85 } },
+  ["workshop-900000002"] = { enabled = true, configuration_options = { language = "kr" } },
+}
+'@)
+
+$cOvr    = Join-Path $cKlei 'modoverrides.lua'
+$cBefore = [IO.File]::ReadAllText($cOvr)
+$cFiles  = @(Get-ModoverrideFiles)
+
+# The name of such a mod is not written out either: it is looked up in a table
+# further up the same file. Reading it as "A" tells the player nothing.
+Check 'a name looked up in a table is resolved' `
+	((Read-ModInfo (Join-Path $cRoot 'workshop-900000001')).Name -eq 'Achievement & Level') `
+	((Read-ModInfo (Join-Path $cRoot 'workshop-900000001')).Name)
+Check 'a plain quoted name still wins' `
+	((Read-ModInfo (Join-Path $cRoot 'workshop-900000002')).Name -eq 'Client Thing')
+
+# The real modinfo shape must still give up its Korean option.
+$c1 = Find-KoreanOption (Join-Path $cRoot 'workshop-900000001')
+Check 'the Achievement & Level shape yields LANGUAGE = kr' `
+	($c1.Option -eq 'LANGUAGE' -and $c1.Value -eq 'kr') ([string]$c1.Option + '=' + [string]$c1.Value)
+
+# Who decides the value.
+Check 'all_clients_require_mod reads as server-decided' `
+	((Get-ModConfigOwner (Join-Path $cRoot 'workshop-900000001')) -eq 'shared')
+Check 'client_only_mod reads as client-decided' `
+	((Get-ModConfigOwner (Join-Path $cRoot 'workshop-900000002')) -eq 'client')
+
+# Reading what is set right now.
+Check 'the current value is read back'        ((Get-ModConfigOption $cFiles '900000001' 'LANGUAGE') -eq 'en')
+Check 'a value that is already Korean is seen' ((Get-ModConfigOption $cFiles '900000002' 'language') -eq 'kr')
+Check 'a missing option reads as nothing'      ((Get-ModConfigOption $cFiles '900000001' 'NOPE') -eq $null)
+Check 'a non-string value is read too'         ((Get-ModConfigOption $cFiles '900000001' 'REFUND') -eq '0.85')
+
+# check must not touch the file.
+$script:reportLines = New-Object System.Collections.Generic.List[string]
+Invoke-SetKorean 'check' $cRoot | Out-Null
+$rc = ($script:reportLines -join "`n")
+
+Check 'check leaves modoverrides.lua byte for byte' ([IO.File]::ReadAllText($cOvr) -eq $cBefore)
+Check 'check makes no backup folder' (-not (Test-Path -LiteralPath (Join-Path $package '_korean_backup')))
+Check 'check shows the value it would replace'  ($rc -match 'LANGUAGE : "en" -> "kr"') $rc
+Check 'check marks the server-decided mod'      ($rc -match '서버 설정이 접속자에게도 내려감')
+Check 'check lists the one already in Korean'   ($rc -match '(?s)이미 한국어로 되어 있는 모드.*900000002')
+Check 'check names the file it looked at'       ($rc -match 'modoverrides\.lua')
+
+# ...and then the real run does change it, from en to kr.
+$script:reportLines = New-Object System.Collections.Generic.List[string]
+Invoke-SetKorean '' $cRoot | Out-Null
+$ra = ($script:reportLines -join "`n")
+$cAfter = [IO.File]::ReadAllText($cOvr)
+
+Check 'the run flips en to kr'            ($cAfter -match 'LANGUAGE = "kr"') $cAfter
+Check 'the other settings survive'        ($cAfter -match 'REFUND = 0\.85')
+Check 'the one already Korean is untouched' ((@([regex]::Matches($cAfter, 'language = "kr"'))).Count -eq 1)
+Check 'the report says what it came from' ($ra -match 'LANGUAGE : "en" -> "kr"') $ra
+
+# A mod that has no block in this cluster is reported, not silently skipped.
+New-CoMod '900000003' @'
+name = "Not On This Server"
+version = "1.0"
+api_version = 10
+all_clients_require_mod = true
+configuration_options = {
+	{ name = "LANGUAGE", label = "Language",
+	  options = { {description = "English", data = "en"}, {description = "Korean", data = "kr"} },
+	  default = "en" },
+}
+'@
+$script:reportLines = New-Object System.Collections.Generic.List[string]
+Invoke-SetKorean '' $cRoot | Out-Null
+$rb = ($script:reportLines -join "`n")
+Check 'a mod missing from modoverrides.lua is listed' `
+	($rb -match '(?s)modoverrides\.lua 에 블록이 없는 모드.*900000003') $rb
+
+Invoke-SetKorean 'stop' $cRoot | Out-Null
+Check 'stop puts the whole file back' ([IO.File]::ReadAllText($cOvr) -eq $cBefore)
+
+Remove-Item -LiteralPath $cRoot -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath (Join-Path $sandbox 'kocklei') -Recurse -Force -ErrorAction SilentlyContinue
+foreach ($stray in @('한국어켜기.txt', '한국어상태.txt')) {
+	$f = Join-Path $package $stray
+	if (Test-Path -LiteralPath $f) { Remove-Item -LiteralPath $f -Force }
+}
+$cb = Join-Path $package '_korean_backup'
+if (Test-Path -LiteralPath $cb) { Remove-Item -LiteralPath $cb -Recurse -Force }
+
+
+Write-Host ''
 Write-Host '=== 13. hangul: install the Korean patch into the game folder ==='
 
 $steam = Join-Path $sandbox "steam"

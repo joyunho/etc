@@ -14,12 +14,13 @@ rem
 rem  Usage:
 rem      korean.bat            switch everything that can be switched
 rem      korean.bat stop       put modoverrides.lua back
+rem      korean.bat check      report what is set now, change nothing
 rem
 rem  ASCII-only on purpose. All Korean text is printed by tools\patch.ps1.
 rem ===========================================================================
 
 chcp 65001 >nul 2>&1
-title DST - collect all mod code
+title DST - switch mods to Korean
 
 if not exist "%~dp0tools\patch.ps1" (
   echo.
