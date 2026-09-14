@@ -231,6 +231,23 @@ zip 하나로 묶어 줍니다.
 
 `diagnose.bat` 은 같은 내용을 압축 없이 `진단결과.txt` 로만 뽑습니다.
 
+### 설치된 모드 전부 보내기 — `collectmods.bat`
+
+모드 폴더를 통째로 압축하면 보통 수 GB 입니다. 대부분이 애니메이션·텍스처·사운드라
+문제를 보는 데는 쓸모가 없습니다. `collectmods.bat` 은 **코드만** 골라 담습니다.
+
+| | |
+|---|---|
+| 담는 것 | `.lua .json .xml .txt .md .po .ini .cfg` |
+| 빼는 것 | `anim/ sound/ images/ bigportraits/ exported/ minimap/ levels/textures/ levels/tiles/`, 3 MB 넘는 파일 |
+| 항상 담는 것 | `모드목록.txt` — 모드 이름·버전·api·파일 수·**진짜 용량**, 그리고 `modoverrides.lua` |
+
+실측: NPC Friends + Heap of Foods **199 MB → 3.8 MB** (코드 927 파일).
+
+코드 총량이 120 MB를 넘으면 거기서 멈추고, 남은 모드는 목록에만 남기고 어떤 모드가
+빠졌는지 알려 줍니다. 자동 탐색이 실패하면 `...\steamapps\workshop\content\322330`
+폴더를 `collectmods.bat` 위로 드래그하면 됩니다.
+
 ### "누가 냉장고를 열어줘야 요리를 시작한다"
 
 이건 실제로 일어나는 현상이고, 원인은 이렇습니다.

@@ -141,7 +141,65 @@ if ($zips.Count -ge 1) {
 }
 
 Write-Host ''
-Write-Host '=== 6. restore from backup ==='
+Write-Host '=== 6. collectmods keeps code and leaves the assets behind ==='
+# A mod folder is mostly animation, texture and sound data. Sending all of it is
+# gigabytes and answers nothing, so only code may travel -- and every mod has to
+# appear in the listing either way.
+$modsRoot = Join-Path $sandbox 'allmods'
+foreach ($m in @('1111111111', '2222222222')) {
+	$dir = Join-Path $modsRoot $m
+	New-Item -ItemType Directory -Path (Join-Path $dir 'scripts') -Force | Out-Null
+	New-Item -ItemType Directory -Path (Join-Path $dir 'anim') -Force | Out-Null
+	New-Item -ItemType Directory -Path (Join-Path $dir 'images') -Force | Out-Null
+
+	[IO.File]::WriteAllText((Join-Path $dir 'modinfo.lua'),
+		"name = `"Test Mod $m`"`nversion = `"1.2.3`"`napi_version = 10`nclient_only_mod = false`n" +
+		"configuration_options =`n{`n`t{ name = `"not_the_mod_name`" },`n}`n")
+	[IO.File]::WriteAllText((Join-Path $dir 'modmain.lua'), "-- code $m`n")
+	[IO.File]::WriteAllText((Join-Path (Join-Path $dir 'scripts') 'thing.lua'), "return {}`n")
+
+	# the bulk: assets that must not travel
+	[IO.File]::WriteAllBytes((Join-Path (Join-Path $dir 'anim') 'big.zip'), (New-Object byte[] 400000))
+	[IO.File]::WriteAllBytes((Join-Path (Join-Path $dir 'images') 'atlas.tex'), (New-Object byte[] 400000))
+	[IO.File]::WriteAllText((Join-Path (Join-Path $dir 'images') 'atlas.xml'), "<Atlas/>`n")
+}
+
+Invoke-CollectMods $modsRoot | Out-Null
+
+$modZips = @(Get-ChildItem -LiteralPath $package -Filter 'DST_모드코드_*.zip' -ErrorAction SilentlyContinue)
+Check 'a mod-code zip was produced' ($modZips.Count -ge 1) ("count=" + $modZips.Count)
+
+if ($modZips.Count -ge 1) {
+	Add-Type -AssemblyName System.IO.Compression.FileSystem
+	$z = [IO.Compression.ZipFile]::OpenRead($modZips[0].FullName)
+	try {
+		$names = @($z.Entries | ForEach-Object { $_.FullName })
+		$all   = $names -join '|'
+
+		Check 'both mods contributed code' `
+			($all.Contains('mod_1111111111/modmain.lua') -and $all.Contains('mod_2222222222/scripts/thing.lua'))
+		Check 'the listing is there' ($all.Contains('모드목록.txt'))
+		Check 'animation data stayed behind' (-not ($all -match '\.zip\||anim/'))
+		Check 'textures stayed behind' (-not $all.Contains('.tex'))
+		Check 'the images folder stayed behind, xml and all' (-not $all.Contains('images/'))
+		Check 'zip entries use forward slashes' (-not $all.Contains('\'))
+
+		$listing = ''
+		$entry = $z.Entries | Where-Object { $_.FullName -eq '모드목록.txt' }
+		if ($entry) {
+			$reader = New-Object IO.StreamReader($entry.Open(), (New-Object Text.UTF8Encoding($true)))
+			try { $listing = $reader.ReadToEnd() } finally { $reader.Dispose() }
+		}
+		Check 'the listing names the mod, not a config option' `
+			($listing.Contains('Test Mod 1111111111') -and -not $listing.Contains('not_the_mod_name'))
+		Check 'the listing reports the real on-disk size' ($listing -match '전체 \d+ 파일 / 0\.[0-9] MB')
+	} finally { $z.Dispose() }
+
+	foreach ($zz in $modZips) { Remove-Item -LiteralPath $zz.FullName -Force }
+}
+
+Write-Host ''
+Write-Host '=== 7. restore from backup ==='
 $ok = Restore-One $modDir
 Check 'restore reports success' $ok
 Check 'added file was removed' (-not (Test-Path -LiteralPath $added))
@@ -149,7 +207,7 @@ Check 'planner is byte-identical to the original' `
 	(-not (Compare-Object $pristine ([IO.File]::ReadAllBytes($plannerCopy)) -SyncWindow 0))
 
 Write-Host ''
-Write-Host '=== 7. restore with no backup (marker stripping) ==='
+Write-Host '=== 8. restore with no backup (marker stripping) ==='
 Install-One $modDir | Out-Null
 Get-ChildItem -LiteralPath (Join-Path $package '_backup') -File | Remove-Item -Force
 $ok = Restore-One $modDir
@@ -158,7 +216,7 @@ Check 'planner is byte-identical after stripping markers' `
 	(-not (Compare-Object $pristine ([IO.File]::ReadAllBytes($plannerCopy)) -SyncWindow 0))
 
 Write-Host ''
-Write-Host '=== 8. a planner without the expected return is refused ==='
+Write-Host '=== 9. a planner without the expected return is refused ==='
 [IO.File]::WriteAllText($plannerCopy, "local X = {}`nreturn X`n")
 $ok = Install-One $modDir
 Check 'refuses to guess when the file shape is unknown' (-not $ok)

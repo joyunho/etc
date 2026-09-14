@@ -9,6 +9,7 @@ file for NPC Friends, then assembles the ready-to-run zip:
         restore.bat            <- undo
         diagnose.bat           <- dump the current state to 진단결과.txt
         collect.bat            <- pack everything needed for support into one zip
+        collectmods.bat        <- pack the code of every installed mod
         README.txt
         files/npc_hof_cooking.lua
         tools/patch.ps1
@@ -208,6 +209,42 @@ NPC Friends 의 왈리 NPC 가 Heap of Foods 를 비롯한 음식 모드의 요�
 
   * 문제가 생기면 USER_SETTINGS 의 debug 를 true 로 바꾸고 서버 로그의
     [NPCF-HOF] 줄을 확인해 주세요.
+
+
+[ 문제가 생겼을 때 - collect.bat ]
+
+  collect.bat 을 더블클릭하면, 이 패치와 관련된 것만 골라 zip 하나로
+  묶어 줍니다. 설치 상태 판정, 요리 관련 lua 10개, 로그의 요리 관련 줄,
+  켜져 있는 모드 목록이 들어갑니다.
+
+  diagnose.bat 은 같은 내용을 압축 없이 진단결과.txt 로만 뽑습니다.
+
+
+[ 설치된 모드를 전부 보내고 싶을 때 - collectmods.bat ]
+
+  collectmods.bat 은 설치된 모든 DST 모드의 "코드"만 골라 담습니다.
+
+  모드 폴더를 통째로 압축하면 보통 수 GB 입니다. 대부분이 애니메이션(.zip),
+  텍스처(.tex), 사운드(.fsb/.fev) 라서 문제를 보는 데는 쓸모가 없습니다.
+  실측으로 모드 2개 199 MB 가 3.8 MB 가 됩니다.
+
+    담는 것   .lua .json .xml .txt .md .po .ini .cfg
+    빼는 것   anim/ sound/ images/ bigportraits/ exported/ minimap/
+              levels/textures/ levels/tiles/ 와 3 MB 넘는 파일
+
+  모드를 하나도 못 담았더라도, 모든 모드는 모드목록.txt 에 반드시 나옵니다
+  (이름 / 버전 / api / 파일 수 / 진짜 용량).
+
+  모드를 못 찾으면 모드가 들어 있는 폴더를 collectmods.bat 위로 드래그하세요.
+  보통 이 경로입니다:
+
+    ...\\steamapps\\workshop\\content\\322330
+
+
+[ 개인정보 ]
+
+  collect.bat 과 collectmods.bat 은 계정 이름, 스팀 ID, 토큰처럼 보이는
+  문자열을 <가림> 으로 바꿔서 담습니다.
 """
 
 
@@ -231,7 +268,7 @@ def main() -> None:
     )
 
     # cmd.exe wants CRLF; these two are ASCII-only on purpose.
-    for name in ("install.bat", "restore.bat", "diagnose.bat", "collect.bat"):
+    for name in ("install.bat", "restore.bat", "diagnose.bat", "collect.bat", "collectmods.bat"):
         text = (PATCH / "templates" / name).read_text(encoding="utf-8")
         text.encode("ascii")  # fail the build if Korean sneaks in
         (BUILD / name).write_bytes(text.replace("\n", "\r\n").encode("ascii"))
