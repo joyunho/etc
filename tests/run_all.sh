@@ -55,6 +55,24 @@ else
 	bad "tests/test_patcher.ps1"
 fi
 
+step "Launchers"
+# Double-clicking a .bat cannot pass it a word, so every action that needs
+# "stop" ships a second file with it already filled in.
+for pair in "hangul_UNDO.bat hangul" "korean_UNDO.bat korean" "bisect_UNDO.bat bisect"; do
+	set -- $pair
+	f="build/NPC_HOF_Patch/$1"
+	if [ ! -f "$f" ]; then
+		bad "$1 is missing"
+	elif ! grep -q -- "-Action $2 -Arg \"stop\"" "$f"; then
+		bad "$1 does not pass stop"
+	else
+		ok "$1"
+	fi
+done
+for f in build/NPC_HOF_Patch/*.bat; do
+	if LC_ALL=C grep -qP '[^\x00-\x7F]' "$f"; then bad "$(basename "$f") is not ASCII"; fi
+done
+
 step "Korean string patch"
 python3 korean_patch/build_korean.py >/dev/null || bad "korean_patch/build_korean.py"
 for f in korean_patch/modinfo.lua korean_patch/modmain.lua; do

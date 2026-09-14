@@ -307,7 +307,7 @@ NPC Friends 의 왈리 NPC 가 Heap of Foods 를 비롯한 음식 모드의 요�
 
   bisect.bat 이 modoverrides.lua 를 고쳐서 모드를 껐다 켰다 합니다.
   시작할 때 원본을 백업해 두고, 끝나면 그대로 되돌립니다.
-  중간에 그만두시려면 bisect.bat stop 을 실행하세요. 바로 되돌립니다.
+  중간에 그만두시려면 bisect_UNDO.bat 을 더블클릭하세요. 바로 되돌립니다.
 
   * 데디케이티드 서버(클러스터 폴더)에서만 씁니다.
   * 도중에 게임 안 모드 화면에서 모드를 건드리면 그 화면이 modoverrides.lua 를
@@ -353,7 +353,7 @@ NPC Friends 의 왈리 NPC 가 Heap of Foods 를 비롯한 음식 모드의 요�
                                알아서 따라오는 경우가 많습니다.
     한국어가 아예 없는 모드    이것만 진짜로 번역이 필요합니다.
 
-  되돌리시려면 korean.bat stop 을 실행하세요. 처음 실행할 때 떠 둔 백업으로
+  되돌리시려면 korean_UNDO.bat 을 더블클릭하세요. 처음 실행할 때 떠 둔 백업으로
   돌려놓습니다 (두 번 실행해도 백업은 덮어쓰지 않습니다).
 
 
@@ -382,7 +382,8 @@ NPC Friends 의 왈리 NPC 가 Heap of Foods 를 비롯한 음식 모드의 요�
   들인 STRINGS 표에 한국어를 덮어쓸 뿐이라, 번역이 틀려도 글자가 이상해질
   뿐이고 모드나 서버가 멈추지는 않습니다.
 
-  빼시려면 hangul.bat stop 을 실행하세요. 폴더와 그 한 줄만 없앱니다.
+  빼시려면 hangul_UNDO.bat 을 더블클릭하세요. 폴더와 그 한 줄만 없앱니다.
+  (명령창에서 hangul.bat stop 을 쳐도 같습니다.)
 
   * 한글이 네모로 보이면 번역이 아니라 글꼴 문제입니다.
     한글 글꼴을 넣어 주는 모드를 같이 켜 두세요.
@@ -431,6 +432,28 @@ def main() -> None:
         text = (PATCH / "templates" / name).read_text(encoding="utf-8")
         text.encode("ascii")  # fail the build if Korean sneaks in
         (BUILD / name).write_bytes(text.replace("\n", "\r\n").encode("ascii"))
+
+    # 되돌리기용 파일. bisect.bat stop 처럼 뒤에 말을 붙여야 하는 것들은
+    # 더블클릭으로는 그 말을 못 붙입니다. 명령창을 열 필요가 없도록
+    # "stop 을 붙인 채로 실행하는" 파일을 따로 만들어 둡니다.
+    for base, undo, what in (
+        ("hangul.bat", "hangul_UNDO.bat", "remove the Korean string patch"),
+        ("korean.bat", "korean_UNDO.bat", "put the mod language settings back"),
+        ("bisect.bat", "bisect_UNDO.bat", "stop the search and restore modoverrides.lua"),
+    ):
+        text = (PATCH / "templates" / base).read_text(encoding="utf-8")
+        text = text.replace('-Arg "%~1"', '-Arg "stop"')
+        text = text.replace(
+            "rem ===========================================================================\n",
+            "rem ===========================================================================\n"
+            f"rem  THIS IS THE UNDO FILE. Double-click it to {what}.\n"
+            f"rem  It is {base} with 'stop' already filled in, because double-clicking\n"
+            "rem  cannot pass a word to a .bat file.\n"
+            "rem ===========================================================================\n",
+            1,
+        )
+        text.encode("ascii")
+        (BUILD / undo).write_bytes(text.replace("\n", "\r\n").encode("ascii"))
 
     (BUILD / "README.txt").write_bytes(
         b"\xef\xbb\xbf" + README.replace("\n", "\r\n").encode("utf-8")
