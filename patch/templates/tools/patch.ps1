@@ -684,7 +684,7 @@ function Get-AllModFolders($override) {
 
 			if (Test-Path -LiteralPath (Join-Path $root 'modinfo.lua')) {
 				$found.Add([pscustomobject]@{ Path = $root; Id = (Split-Path -Leaf $root); Root = (Split-Path -Parent $root) })
-				return $found
+				return (Resolve-DuplicateMods $found)
 			}
 
 			foreach ($dir in (Get-ChildItem -LiteralPath $root -Directory -ErrorAction Stop)) {
@@ -696,7 +696,7 @@ function Get-AllModFolders($override) {
 			Write-Fail ('직접 지정하신 폴더를 읽지 못했습니다: ' + $override)
 		}
 
-		return $found
+		return (Resolve-DuplicateMods $found)
 	}
 
 	foreach ($lib in (Get-SteamLibraries)) {
@@ -716,7 +716,6 @@ function Get-AllModFolders($override) {
 				foreach ($dir in (Get-ChildItem -LiteralPath $root -Directory -ErrorAction Stop)) {
 					# modinfo.lua 가 있어야 모드입니다.
 					if (-not (Test-Path -LiteralPath (Join-Path $dir.FullName 'modinfo.lua'))) { continue }
-					if ($found | Where-Object { $_.Path -eq $dir.FullName }) { continue }
 
 					$found.Add([pscustomobject]@{
 						Path = $dir.FullName
@@ -728,7 +727,34 @@ function Get-AllModFolders($override) {
 		}
 	}
 
-	return $found
+	return (Resolve-DuplicateMods $found)
+}
+
+# 같은 모드가 두 군데에 깔려 있는 일이 흔합니다.
+#   ...\workshop\content\322330\2484725102        <- 스팀이 받아 둔 것
+#   ...\Don't Starve Together\mods\workshop-2484725102  <- 서버가 쓰는 복사본
+# 둘은 같은 모드이므로 번호로 묶고, 코드가 더 많이 들어 있는 쪽 하나만 씁니다.
+function Resolve-DuplicateMods($list) {
+	$best = @{}
+
+	foreach ($entry in $list) {
+		$id = ($entry.Id -replace '^workshop-', '')
+		if ($id -notmatch '^\d+$') { $id = $entry.Id }
+
+		$n = 0
+		try {
+			$n = @(Get-ChildItem -LiteralPath $entry.Path -Recurse -File -Filter *.lua -ErrorAction SilentlyContinue).Count
+		} catch { }
+
+		$entry | Add-Member -NotePropertyName 'Number'   -NotePropertyValue $id   -Force
+		$entry | Add-Member -NotePropertyName 'LuaFiles' -NotePropertyValue $n    -Force
+
+		if (-not $best.ContainsKey($id) -or $n -gt $best[$id].LuaFiles) { $best[$id] = $entry }
+	}
+
+	$out = New-Object System.Collections.Generic.List[object]
+	foreach ($id in ($best.Keys | Sort-Object)) { $out.Add($best[$id]) }
+	return $out
 }
 
 # modinfo.lua 에서 이름과 버전만 살짝 긁어옵니다 (lua 를 실행하지는 않습니다).
@@ -753,7 +779,9 @@ function Read-ModInfo($modPath) {
 		#   name = "My Mod"
 		#   name = is_chinese and "중국어" or "English"      <- 마지막 것을 씁니다
 		#   name = ChooseTranslationTable(STRINGS.NAME)      <- 글자가 없으니 비워 둡니다
-		$line = [regex]::Match($text, '(?m)^name\s*=\s*(.+)$')
+		# modinfo 를 한 줄에 몰아 쓴 모드가 있어서, 다음 "무엇 =" 이 나오면
+		# 거기서 끊습니다. 안 그러면 icon = "preview.tex" 를 이름으로 집습니다.
+		$line = [regex]::Match($text, '(?m)^name\s*=\s*(.+?)(?=\s+[A-Za-z_]\w*\s*=|$)')
 		if ($line.Success) {
 			$quoted = [regex]::Matches($line.Groups[1].Value, '"([^"]{1,120})"')
 			if ($quoted.Count -gt 0) {
@@ -1082,6 +1110,14 @@ function Invoke-LastError {
 #  있는 자리는 40 개뿐이고, 넘기는 순간 서버가 아예 안 켜집니다.
 
 $WX78_LIMIT     = 63   # assert(module_netid < 64)
+# 바닐라 wx78_moduledefs.lua 가 먼저 등록하는 23 개. 모드가 추가한 것만 세려면
+# 이 이름들은 빼야 합니다.
+$WX78_STOCK = @(
+	'bee', 'chess', 'cold', 'digestion', 'heat', 'light', 'light2',
+	'maxhealth', 'maxhealth2', 'maxhunger', 'maxhunger1', 'maxsanity', 'maxsanity1',
+	'movespeed', 'movespeed2', 'music', 'nightvision', 'radar', 'screech',
+	'shielding', 'spin', 'stacksize', 'taser'
+)
 $WX78_VANILLA   = 23   # 바닐라가 먼저 쓰는 개수
 $SCAN_MAX_BYTES = 3MB  # 이보다 큰 lua 는 건너뜁니다 (보통 번역 표)
 
@@ -1098,7 +1134,7 @@ $MOD_SIGNALS = @(
 	@{ Key = 'dishes';    Label = '냄비 요리 추가';          Weight = 'watch'
 	   Pattern = 'AddCookerRecipe\s*\(' },
 	@{ Key = 'errorhook'; Label = '오류 처리 가로채기';      Weight = 'crash'
-	   Pattern = 'SetGlobalErrorWidget|(?m)^\s*(_G\.)?error\s*=\s*function' },
+	   Pattern = 'SetGlobalErrorWidget|(_G|GLOBAL)\.error\s*=|(?m)^\s*(local\s+)?function\s+error\s*\(|(?m)^\s*error\s*=\s*function' },
 	@{ Key = 'container'; Label = '상자 내부 손대기';        Weight = 'cook'
 	   Pattern = 'AddComponentPostInit\s*\(\s*"container"|containers\.params|GetNumSlots\s*=' },
 	@{ Key = 'chest';     Label = '상자 프리팹 손대기';      Weight = 'cook'
@@ -1121,6 +1157,7 @@ function Measure-ModCode($modPath) {
 	$result = [pscustomobject]@{
 		Hits         = $hits
 		Files        = 0
+		WxNames      = New-Object System.Collections.Generic.List[string]
 		CookRecipes  = New-Object System.Collections.Generic.List[string]
 		CraftRecipes = New-Object System.Collections.Generic.List[string]
 		Unreadable   = 0
@@ -1145,6 +1182,16 @@ function Measure-ModCode($modPath) {
 			if ($n -gt 0) { $result.Hits[$sig.Key] = $result.Hits[$sig.Key] + $n }
 		}
 
+		# WX-78 모듈은 언제나 wx78module_<이름> 이라는 프리팹을 같이 만듭니다.
+		# 그래서 이 이름을 세는 것이 AddNewModuleDefinition 호출을 세는 것보다
+		# 정확합니다 (반복문 한 줄로 20 개를 등록하는 모드가 있습니다).
+		foreach ($m in [regex]::Matches($text, 'wx78module_([A-Za-z0-9_]{1,40})')) {
+			$nm = $m.Groups[1].Value
+			if ($WX78_STOCK -notcontains $nm -and -not $result.WxNames.Contains($nm)) {
+				$result.WxNames.Add($nm)
+			}
+		}
+
 		# 냄비 요리 이름: 두 모드가 같은 이름을 쓰면 나중에 켜진 쪽만 남습니다.
 		foreach ($m in [regex]::Matches($text,
 			'AddCookerRecipe\s*\(\s*"[^"]{1,40}"\s*,\s*\{[\s\S]{0,300}?name\s*=\s*"([^"]{1,60})"')) {
@@ -1161,8 +1208,14 @@ function Measure-ModCode($modPath) {
 }
 
 # 최근 로그에서 "이 모드 때문"이라고 이름이 찍힌 것만 모읍니다.
+#
+# 중요: ../mods/workshop-123/... 은 평범한 줄에도 잔뜩 나옵니다 (그냥 파일 경로).
+# 그것까지 세면 설치된 모드가 전부 범인이 되어 버립니다. 그래서 오류가 시작된
+# 줄부터 아래로 몇 줄만 들여다보고, 그 안에 나온 모드만 지목합니다.
 function Get-ModBlameFromLogs {
-	$blame = @{}
+	$blame  = @{}
+	$names  = @{}
+	$wxHit  = $false
 
 	# server_log.txt 뿐 아니라 백업본(server_log_2026-..-...txt)까지 봅니다.
 	$paths = @(Get-DstLogs)
@@ -1183,33 +1236,55 @@ function Get-ModBlameFromLogs {
 		} catch { $logs = @() }
 	}
 
-	foreach ($log in $logs) {
-		$text = $null
-		try { $text = [IO.File]::ReadAllText($log.FullName) } catch { continue }
-		if ([string]::IsNullOrEmpty($text)) { continue }
+	$blockStart = '\[string "|stack traceback|LUA ERROR|SCRIPT ERROR|Assert failure|' +
+		'attempt to (index|call|compare|perform|concatenate)|is not declared|DoLuaFile Error'
 
-		foreach ($pair in @(
-			@{ Pattern = 'MOD ERROR:\s*workshop-(\d+)';        Note = '로그에 MOD ERROR 로 찍힘' },
-			@{ Pattern = '\.\./mods/workshop-(\d+)/[^\s]+';    Note = '오류 스택에 이 모드 파일이 나옴' },
-			@{ Pattern = 'Mod:\s*workshop-(\d+)[^\n]*[Ee]rror'; Note = '모드 로드 중 오류' }
-		)) {
-			foreach ($m in [regex]::Matches($text, $pair.Pattern)) {
-				$id = $m.Groups[1].Value
-				if (-not $blame.ContainsKey($id)) {
-					$blame[$id] = New-Object System.Collections.Generic.List[string]
+	function Add-Blame($table, $id, $note) {
+		if (-not $table.ContainsKey($id)) {
+			$table[$id] = New-Object System.Collections.Generic.List[string]
+		}
+		if (-not $table[$id].Contains($note)) { $table[$id].Add($note) }
+	}
+
+	foreach ($log in $logs) {
+		$lines = @()
+		try { $lines = [IO.File]::ReadAllLines($log.FullName) } catch { continue }
+		if ($lines.Length -eq 0) { continue }
+
+		for ($i = 0; $i -lt $lines.Length; $i++) {
+			$line = $lines[$i]
+
+			# DST 가 스스로 읽어낸 모드 이름. modinfo 를 파싱하는 것보다 정확합니다.
+			$nm = [regex]::Match($line, 'Loading mod:\s*workshop-(\d+)\s*\((.*)\)\s*Version:')
+			if ($nm.Success) { $names[$nm.Groups[1].Value] = $nm.Groups[2].Value.Trim() }
+
+			# 이건 언제나 확실합니다.
+			# 이 문장이 로그에 있으면 WX-78 자리가 실제로 넘친 것입니다. 추측이 아닙니다.
+			if ($line -match 'To support additional WX modules') { $wxHit = $true }
+
+			$me = [regex]::Match($line, 'MOD ERROR:\s*workshop-(\d+)')
+			if ($me.Success) { Add-Blame $blame $me.Groups[1].Value '로그에 MOD ERROR 로 찍힘' }
+
+			# 오류가 시작된 줄. 여기서부터 아래로만 모드 경로를 봅니다.
+			if ($line -notmatch $blockStart) { continue }
+
+			$stop = [Math]::Min($lines.Length - 1, $i + 40)
+			for ($k = $i; $k -le $stop; $k++) {
+				# 새 타임스탬프가 나오면 그 오류는 거기서 끝난 것으로 봅니다.
+				if ($k -gt $i -and $lines[$k] -match '^\[\d\d:\d\d:\d\d\]' -and
+					$lines[$k] -notmatch $blockStart -and $lines[$k] -notmatch '\.\./mods/') { break }
+
+				foreach ($m in [regex]::Matches($lines[$k], '\.\./mods/workshop-(\d+)/')) {
+					Add-Blame $blame $m.Groups[1].Value '오류 스택에 이 모드 파일이 나옴'
 				}
-				if (-not $blame[$id].Contains($pair.Note)) { $blame[$id].Add($pair.Note) }
 			}
 		}
 	}
 
-	return $blame
+	return [pscustomobject]@{ Blame = $blame; Names = $names; WxOverflow = $wxHit }
 }
 
 
-# 서버에 실제로 "켜져" 있는 모드를 modoverrides.lua 에서 읽습니다.
-# 구독만 해 놓고 안 켠 모드는 아무 자리도 차지하지 않으므로, 이것을 알아야
-# WX-78 자리 계산이 맞습니다.
 function Get-EnabledMods {
 	$state = @{}
 
@@ -1262,7 +1337,10 @@ function Invoke-ModCheck($root) {
 
 	Write-Ok ('모드 ' + $mods.Count + ' 개를 찾았습니다. 코드를 읽는 중입니다...')
 
-	$blame   = Get-ModBlameFromLogs
+	$fromLog = Get-ModBlameFromLogs
+	$blame   = $fromLog.Blame
+	$wxBlown = $fromLog.WxOverflow
+	$logNames = $fromLog.Names
 	$onOff   = Get-EnabledMods
 	$rows    = New-Object System.Collections.Generic.List[object]
 	$cookMap = @{}   # 요리 이름 -> 그 이름을 쓰는 모드들
@@ -1282,8 +1360,10 @@ function Invoke-ModCheck($root) {
 			$cookMap[$dish].Add($entry.Id)
 		}
 
-		$label = $info.Name
-		if ([string]::IsNullOrWhiteSpace($label)) { $label = $entry.Id }
+		$bareId = $entry.Id -replace '^workshop-', ''
+		$label  = $info.Name
+		if ($logNames.ContainsKey($bareId)) { $label = $logNames[$bareId] }
+		if ([string]::IsNullOrWhiteSpace($label) -or $label -eq $bareId) { $label = 'workshop-' + $bareId }
 
 		$bare = $entry.Id -replace '^workshop-', ''
 		$on   = $null
@@ -1323,9 +1403,11 @@ function Invoke-ModCheck($root) {
 	# 모드는 두 가지 방법으로 모듈을 등록합니다. 둘 다 쓰는 모드도 있으므로
 	# 더하지 않고 큰 쪽을 그 모드의 개수로 봅니다.
 	foreach ($r in $rows) {
-		$a = $r.Code.Hits['wx78']
-		$b = $r.Code.Hits['wx78tbl']
-		$r.Wx = $(if ($a -ge $b) { $a } else { $b })
+		$best = $r.Code.Hits['wx78']
+		foreach ($v in @($r.Code.Hits['wx78tbl'], $r.Code.WxNames.Count)) {
+			if ($v -gt $best) { $best = $v }
+		}
+		$r.Wx = $best
 	}
 
 	# 서버에 켜져 있는 모드만 자리를 씁니다.
@@ -1348,14 +1430,21 @@ function Invoke-ModCheck($root) {
 		foreach ($r in $wxRows) {
 			Add-Line ('    ' + $r.Id.PadRight(22) + ' 약 ' + ([string]$r.Wx).PadLeft(3) + ' 개   ' + $r.Name)
 		}
-		if ($wxTotal -gt $wxRoom) {
-			Add-Line ''
+		Add-Line ''
+		if ($wxBlown) {
+			Add-Line '  >> 로그에 이 문장이 있습니다:'
+			Add-Line '       "To support additional WX modules, player_classified.upgrademodulebars must be updated"'
+			Add-Line '     자리가 실제로 넘쳤습니다. 이것 때문에 서버가 안 켜집니다.'
+			Add-Line '     위 목록에서 하나를 끄세요. 3번에서 MOD ERROR 로 찍힌 모드가 1순위입니다.'
+		} elseif ($wxTotal -gt $wxRoom) {
 			Add-Line ('  >> 자리가 ' + ($wxTotal - $wxRoom) + ' 개 모자랍니다. 이 상태면 서버가 안 켜집니다.')
 			Add-Line '     위 목록에서 개수가 많은 모드를 하나 끄면 켜집니다.'
-			Add-Line '     (개수는 코드에서 센 어림값입니다. 실제 원인은 아래 3번 로그 쪽이 정확합니다.)'
 		} else {
-			Add-Line ''
-			Add-Line ('  아직 ' + ($wxRoom - $wxTotal) + ' 자리 남았습니다. 이 문제는 아닙니다.')
+			Add-Line ('  코드에서 센 것으로는 ' + ($wxRoom - $wxTotal) + ' 자리 남습니다.')
+			Add-Line '     다만 이 숫자는 믿지 마세요. 모듈을 반복문 한 줄로 20 개씩 등록하는'
+			Add-Line '     모드가 있어서 코드만 봐서는 제대로 셀 수 없습니다.'
+			Add-Line '     넘쳤는지 아닌지는 로그가 말해 줍니다. 위 문장이 안 나왔다면'
+			Add-Line '     지금은 안 넘친 것입니다.'
 		}
 	}
 

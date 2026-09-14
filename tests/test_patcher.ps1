@@ -267,22 +267,70 @@ return {
 
 [IO.File]::WriteAllText((Join-Path $klei 'Cluster_1/Master/server_log.txt'), @'
 [00:00:04]: Loading mod: workshop-900000001 (WX Heavy) Version:1.0
+[00:00:04]: Mod: workshop-900000006 (Clientside)	Loading modmain.lua
+[00:00:04]: loaded ../mods/workshop-900000006/scripts/thing.lua
 [00:00:05]: MOD ERROR: workshop-900000005 (Foody)
+[00:00:05]: [string "scripts/wx78_moduledefs.lua"]:1667: To support additional WX modules, player_classified.upgrademodulebars must be updated
+LUA ERROR stack traceback:
+    =[C] in function 'assert'
     ../mods/workshop-900000003/gemscripts/tools/dynamictilemanager.lua(188,1) in function 'error'
 '@)
 
+# The same mod installed twice, as Steam and the server each keep a copy. The
+# bare-id folder is the fuller one, so that is the copy modcheck must measure.
+New-FakeMod '900000004' "name = `"Chesty`"`nversion = `"1.0`"`napi_version = 10" @'
+AddComponentPostInit("container", function(self) end)
+AddPrefabPostInit("treasurechest", function(inst) end)
+AddCookerRecipe("cookpot", { name = "stew_a", test = function() end })
+'@
+$dup = Join-Path $mcRoot 'workshop-900000004'
+New-Item -ItemType Directory -Force -Path $dup | Out-Null
+[IO.File]::WriteAllText((Join-Path $dup 'modinfo.lua'), "name = `"Chesty`"`nversion = `"1.0`"`napi_version = 10")
+
+# modinfo squeezed onto one line: the name must not run into the next key.
+New-FakeMod '900000008' 'name = "Health Bar" icon = "preview.tex" version = "2.16"' 'print("hi")'
+
+# A mod that registers its modules in a loop: only the prefab names give it away.
+New-FakeMod '900000009' "name = `"Module Pack`"`nversion = `"1.0`"`napi_version = 10" @'
+local defs = { "wx78module_alpha", "wx78module_beta", "wx78module_gamma",
+               "wx78module_delta", "wx78module_maxhealth" }
+for _, d in ipairs(defs) do AddNewModuleDefinition(d) end
+'@
+
 # Get-KleiRoots builds Windows-shaped paths; point it at the sandbox instead.
 function Get-KleiRoots { @($klei) }
+
+$mods = Get-AllModFolders $mcRoot
+$ids  = @($mods | ForEach-Object { $_.Number })
+Check 'folders: the same mod in two places is counted once' `
+	((@($ids | Where-Object { $_ -eq '900000004' })).Count -eq 1) ("ids: " + ($ids -join ','))
+Check 'folders: the fuller copy is the one kept' `
+	(@($mods | Where-Object { $_.Number -eq '900000004' })[0].LuaFiles -ge 2)
+
+$oneLine = Read-ModInfo (Join-Path $mcRoot 'workshop-900000008')
+Check 'modinfo: a one-line modinfo does not leak the next key into the name' `
+	($oneLine.Name -eq 'Health Bar') ("got '" + $oneLine.Name + "'")
+
+$loop = Measure-ModCode (Join-Path $mcRoot 'workshop-900000009')
+Check 'code: modules registered in a loop are counted by prefab name' `
+	($loop.WxNames.Count -eq 4) ("got " + $loop.WxNames.Count)
+Check 'code: a vanilla module name is not counted as the mod''s own' `
+	(-not $loop.WxNames.Contains('maxhealth'))
 
 $state = Get-EnabledMods
 Check 'modoverrides: enabled mod is read as on'  ($state['900000001'] -eq $true)
 Check 'modoverrides: disabled mod is read as off' ($state['900000002'] -eq $false)
 Check 'modoverrides: a mod with no folder is still listed' ($state.ContainsKey('900000007'))
 
-$blamed = Get-ModBlameFromLogs
+$fromLog = Get-ModBlameFromLogs
+$blamed  = $fromLog.Blame
 Check 'logs: MOD ERROR names the mod'            ($blamed.ContainsKey('900000005'))
 Check 'logs: a stack frame names the mod'        ($blamed.ContainsKey('900000003'))
 Check 'logs: an innocent mod is not blamed'      (-not $blamed.ContainsKey('900000001'))
+Check 'logs: a mod path in an ordinary line is not blamed' `
+	(-not $blamed.ContainsKey('900000006')) 'a plain file path is not an error'
+Check 'logs: the name DST printed is picked up'  ($fromLog.Names['900000001'] -eq 'WX Heavy')
+Check 'logs: the WX-78 assert is detected'       ($fromLog.WxOverflow -eq $true)
 
 $code = Measure-ModCode (Join-Path $mcRoot 'workshop-900000001')
 Check 'code: WX-78 registrations are counted'    ($code.Hits['wx78'] -eq 25) ("got " + $code.Hits['wx78'])
@@ -303,9 +351,9 @@ Invoke-ModCheck $mcRoot | Out-Null
 $text = ($script:reportLines -join "`n")
 
 Check 'report: counts only the mods that are switched on' `
-	($text -match '개수: 약 25 개') 'expected 25, not 45'
-Check 'report: says the budget is fine when it is' `
-	($text -match '자리 남았습니다')
+	($text -match '개수: 약 29 개') 'expected 29 (25 + 4), not 49'
+Check 'report: the log-confirmed overflow outranks the estimate' `
+	($text -match 'To support additional WX modules')
 Check 'report: names the mod the log blamed' `
 	($text -match 'workshop-900000005[\s\S]{0,200}MOD ERROR')
 Check 'report: flags the error-handler hijacker' `
@@ -319,7 +367,7 @@ Check 'report: marks the switched-off mod as off' `
 Check 'report: does not blame the disabled WX mod' `
 	(-not ($text -match 'workshop-900000002\s+약'))
 
-# ...and with that mod switched on, the same library must trip the limit.
+# ...and switching the extra WX mod on must move the budget.
 [IO.File]::WriteAllText((Join-Path $klei 'Cluster_1/modoverrides.lua'),
 	((Get-Content -LiteralPath (Join-Path $klei 'Cluster_1/modoverrides.lua') -Raw) `
 		-replace '"workshop-900000002"\] = \{ enabled = false', '"workshop-900000002"] = { enabled = true'))
@@ -327,8 +375,8 @@ Check 'report: does not blame the disabled WX mod' `
 $script:reportLines = New-Object System.Collections.Generic.List[string]
 Invoke-ModCheck $mcRoot | Out-Null
 $text2 = ($script:reportLines -join "`n")
-Check 'report: over the WX-78 limit is reported as a startup failure' `
-	($text2 -match '개수: 약 45 개' -and $text2 -match '모자랍니다')
+Check 'report: switching the extra mod on shows up in the budget' `
+	($text2 -match '개수: 약 49 개')
 
 foreach ($stray in @('모드점검.txt')) {
 	$f = Join-Path $package $stray
