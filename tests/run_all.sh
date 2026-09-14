@@ -55,6 +55,13 @@ else
 	bad "tests/test_patcher.ps1"
 fi
 
+step "Korean string patch"
+python3 korean_patch/build_korean.py >/dev/null || bad "korean_patch/build_korean.py"
+for f in korean_patch/modinfo.lua korean_patch/modmain.lua korean_patch/scripts/korean_strings.lua; do
+	if "$LUAC" -p "$f" 2>/dev/null; then ok "$f"; else bad "$f"; fi
+done
+if "$LUA" tests/test_korean.lua >/dev/null; then ok "tests/test_korean.lua"; else bad "tests/test_korean.lua"; fi
+
 step "Bisect tests (simulated server)"
 if ! command -v "$PWSH" >/dev/null 2>&1; then
 	printf '   \033[33mSKIP\033[0m pwsh not installed\n'
