@@ -21,7 +21,21 @@ end
 local enabled_mods = {}
 
 local function NewEnv()
-	local STRINGS = { NAMES = {}, CHARACTERS = {}, UI = {} }
+	-- DST leaves most action labels as plain strings, not tables. Anything that
+	-- assumes a table here will index a string and die on the spot -- which is
+	-- exactly what stopped the game the first time this shipped.
+	local STRINGS = {
+		NAMES = {},
+		CHARACTERS = {},
+		UI = {},
+		ACTIONS = {
+			PICK = "Pick",
+			GIVE = "Give",
+			DEPLOY = "Deploy",
+			TEACH = "Learn",
+			START_PUSHING = "Push",
+		},
+	}
 	return {
 		STRINGS = STRINGS,
 		KnownModIndex = {
@@ -167,7 +181,35 @@ scan(G4.STRINGS, "")
 check("no Chinese was left behind", cjk == 0, tostring(cjk))
 check("no English sentence was left behind", latin == 0, tostring(latin))
 
-print("\n=========== 8. it can never stop the game ===========")
+print("\n=========== 8. a string-valued action label is widened, not indexed ===========")
+
+enabled_mods = {}
+enabled_mods["workshop-3597024951"] = true
+local G8 = NewEnv()
+local ok8, err8 = LoadPatch(G8)
+check("it loads against DST-shaped ACTIONS strings", ok8, tostring(err8))
+check("the action label became a table",
+	type(G8.STRINGS.ACTIONS.PICK) == "table", type(G8.STRINGS.ACTIONS.PICK))
+check("the original label survived as GENERIC",
+	G8.STRINGS.ACTIONS.PICK ~= nil and G8.STRINGS.ACTIONS.PICK.GENERIC == "Pick",
+	tostring(G8.STRINGS.ACTIONS.PICK and G8.STRINGS.ACTIONS.PICK.GENERIC))
+check("and the Korean variant was added beside it",
+	G8.STRINGS.ACTIONS.PICK.TAKEITEM == "가져오기",
+	tostring(G8.STRINGS.ACTIONS.PICK.TAKEITEM))
+check("the same holds for GIVE",
+	type(G8.STRINGS.ACTIONS.GIVE) == "table" and G8.STRINGS.ACTIONS.GIVE.GENERIC == "Give"
+		and G8.STRINGS.ACTIONS.GIVE.WASH == "세탁하기")
+check("a label with no variants is replaced outright",
+	G8.STRINGS.ACTIONS.JX_DRIVE == "운전하기", tostring(G8.STRINGS.ACTIONS.JX_DRIVE))
+
+-- A parent that is neither table nor string must be left alone, not clobbered.
+local G9 = NewEnv()
+G9.STRINGS.ACTIONS.PICK = 42
+local ok9 = LoadPatch(G9)
+check("a parent of an unexpected type is loaded past", ok9)
+check("and left exactly as it was", G9.STRINGS.ACTIONS.PICK == 42, tostring(G9.STRINGS.ACTIONS.PICK))
+
+print("\n=========== 9. it can never stop the game ===========")
 
 -- KnownModIndex missing entirely, the way it would be if Klei moved it.
 local G5 = NewEnv()

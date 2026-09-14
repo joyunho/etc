@@ -41,27 +41,15 @@ def lua_quote(s: str) -> str:
     return '"' + out + '"'
 
 
-def lua_path(path: str) -> str:
-    """.UI.RARITY.Modded -> STRINGS.UI.RARITY["Modded"]
+def lua_call(path: str, value: str) -> str:
+    """.UI.RARITY.Modded -> Set("모드 - ", "UI", "RARITY", "Modded")
 
-    The last step is written as a bracket lookup so that keys which are Lua
-    keywords, or start with a digit, cannot produce a syntax error.
+    Every key is passed as a quoted argument, so a key that is a Lua keyword,
+    starts with a digit, or contains anything unusual cannot turn into a
+    syntax error or reach the wrong table.
     """
-    parts = path.lstrip(".").split(".")
-    head = "STRINGS." + ".".join(parts[:-1]) if len(parts) > 1 else "STRINGS"
-    return f'{head}["{parts[-1]}"]'
-
-
-def ensure_path(path: str) -> str:
-    """Lua to create the parent tables if the mod has not made them yet."""
-    parts = path.lstrip(".").split(".")[:-1]
-    lines = []
-    cur = "STRINGS"
-    for p in parts:
-        nxt = f'{cur}["{p}"]'
-        lines.append(f"if {nxt} == nil then {nxt} = {{}} end")
-        cur = nxt
-    return lines
+    parts = ", ".join(f'"{p}"' for p in path.lstrip(".").split("."))
+    return f"Set({lua_quote(value)}, {parts})"
 
 
 def main() -> None:
@@ -77,15 +65,10 @@ def main() -> None:
         body.append("")
         body.append(f"-- {NAMES.get(mid, mid)}  (workshop-{mid})  {len(entries)}개")
         body.append(f'pcall(function() if Apply("{mid}") then')
-        seen_parents: set[str] = set()
         for path in sorted(entries):
             if not PATH_OK.match(path):
                 raise SystemExit(f"거부: 이상한 경로 {mid} {path}")
-            for line in ensure_path(path):
-                if line not in seen_parents:
-                    seen_parents.add(line)
-                    body.append("\t" + line)
-            body.append(f"\t{lua_path(path)} = {lua_quote(entries[path])}")
+            body.append("\t" + lua_call(path, entries[path]))
             total += 1
         body.append("end end)")
 
@@ -114,6 +97,37 @@ local function Translate()
 				or Index:IsModForceEnabled("workshop-" .. id)
 		end)
 		return ok and enabled or false
+	end
+
+	-- 글자 하나를 제자리에 넣습니다.
+	--
+	-- 중간 칸이 이미 "문자열"인 경우를 반드시 따로 다뤄야 합니다. DST 는
+	-- STRINGS.ACTIONS.PICK 처럼 동작 문구를 그냥 문자열로 둡니다. 거기에
+	-- 대상별 문구를 붙이려면 표로 바꾸고 원래 문자열을 GENERIC 으로 옮기는
+	-- 것이 DST 의 규칙입니다. 이 과정을 건너뛰고 문자열에 [...] 로 대입하면
+	-- "attempt to index a string value" 로 그 자리에서 터집니다.
+	local function Set(value, ...)
+		local node = STRINGS
+		local n = select("#", ...)
+
+		for i = 1, n - 1 do
+			local key = select(i, ...)
+			local nxt = node[key]
+
+			if nxt == nil then
+				nxt = {{}}
+				node[key] = nxt
+			elseif type(nxt) == "string" then
+				nxt = {{ GENERIC = nxt }}
+				node[key] = nxt
+			elseif type(nxt) ~= "table" then
+				return      -- 표도 문자열도 아니면 건드리지 않습니다
+			end
+
+			node = nxt
+		end
+
+		node[select(n, ...)] = value
 	end
 
 """
