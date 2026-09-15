@@ -27,6 +27,7 @@ Core.cfg =
 	protect        = {},        -- [prefab] = true, never spent as an ingredient
 	spread_cookware = true,     -- skip stations too small to cook in, rotate the rest
 	taste_everything = true,    -- make one of each before making a second of anything
+	use_spicer      = true,     -- also use Warly's Portable Seasoning Station
 }
 
 -- Variety weights. The dish the NPC picks is chosen by

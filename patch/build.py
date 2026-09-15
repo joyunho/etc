@@ -48,6 +48,7 @@ MERGE_ORDER = [
     (SCRIPTS / "hofnpc_core.lua", "Core"),
     (SCRIPTS / "hofnpc_slots.lua", "Slots"),
     (SCRIPTS / "hofnpc_variety.lua", "Variety"),
+    (SCRIPTS / "hofnpc_spice.lua", "Spice"),
     (SCRIPTS / "hofnpc_search.lua", "Search"),
     (SCRIPTS / "hofnpc_cookware.lua", "Cookware"),
     (SCRIPTS / "hofnpc_diag.lua", "Diag"),
@@ -75,6 +76,29 @@ def strip_module(path: Path, returns: str) -> str:
     return "\n".join(kept).rstrip() + "\n"
 
 
+# Every module keeps its own file-scope locals, but the merged file is one
+# chunk, so a `local function Slots(...)` in one module quietly shadows the
+# `Slots` module table from another and the failure only shows at runtime.
+MODULE_SCOPE_LOCAL = re.compile(r"^local\s+(?:function\s+)?(\w+)")
+
+
+def check_no_shadowing() -> None:
+    names = {returns for _, returns in MERGE_ORDER}
+    problems = []
+
+    for path, returns in MERGE_ORDER:
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            match = MODULE_SCOPE_LOCAL.match(line)
+            if match is None:
+                continue
+            name = match.group(1)
+            if name in names and name != returns and "require(" not in line:
+                problems.append(f"{path.name}:{number}: `local {name}` shadows the {name} module")
+
+    if problems:
+        raise SystemExit("merged file would shadow a module:\n  " + "\n  ".join(problems))
+
+
 def build_lua() -> str:
     banner = (
         "-- " + "=" * 74 + "\n"
@@ -83,6 +107,8 @@ def build_lua() -> str:
         "--  npcfriends_hof_cooking/scripts/ instead of editing this file.\n"
         "-- " + "=" * 74 + "\n\n"
     )
+
+    check_no_shadowing()
 
     parts = [banner, (PATCH / "header.lua").read_text(encoding="utf-8")]
 
@@ -264,8 +290,40 @@ NPC Friends 의 왈리 NPC 가 Heap of Foods 를 비롯한 음식 모드의 요�
   다 만든 음식을 거두는 것은 그대로입니다. NPC Friends 의 수확 단계는
   이 함수를 거치지 않고 목록을 직접 보기 때문입니다.
 
-  * 양념기 자체를 NPC 가 쓰게 만들 수는 없습니다. 재료 4개를 요구하는
-    쪽이 NPC Friends 의 난독화된 행동 파일 안에 있어서 손댈 수 없습니다.
+
+[ 양념기 쓰게 하기 - use_spicer ]
+
+  양념기를 피하는 것으로 끝내지 않고, 실제로 쓰게 했습니다.
+  요리된 음식 + 향신료 → 양념 요리 (마늘가루=피해감소, 고춧가루=공격력,
+  설탕=작업속도, 소금=맛).
+
+  막고 있던 것은 두 가지였습니다.
+    1) 재료를 4개 안 들고 있으면 양념기로 걸어가지 않는다
+    2) 4개를 안 넣었으면 불을 안 붙인다
+  둘 다 난독화된 행동 파일 안에 있습니다.
+
+  그런데 그 파일이 쓰는 NPCCookingBehavior 는 그냥 전역 클래스이고,
+  문제의 두 단계가 그 클래스의 함수로 나와 있습니다.
+
+      NPCCookingBehavior:_MakeTakeActionFn(items, taken)
+      NPCCookingBehavior:_MakePutActionFn(taken, plan, node)
+
+  앞의 것이 돌려주는 함수가 상자에서 물건을 꺼내 taken 에 이름을 적는데,
+  4개 검사는 바로 그 taken 의 길이를 셉니다. 뒤의 것이 냄비에 넣고 불을
+  붙입니다. 이 둘만 감싸면 됩니다. 남의 코드를 베끼거나 다시 구현하지
+  않고, 일반 요리일 때는 그대로 통과시킵니다.
+
+  양념 요리는 찾을 것도 없습니다. DST 의 양념 레시피 440개(바닐라 316 +
+  음식 모드 124)가 전부 자기 재료를 적어 두고 있습니다.
+
+      name     = "meatballs_spice_garlic"
+      basename = "meatballs"
+      spice    = "SPICE_GARLIC"
+
+  * 요리와 번갈아 합니다. 양념만 하면 창고가 안 찹니다.
+  * 양념기가 계속 거부하면 세 번 만에 포기하고 원래대로 돌아갑니다.
+  * NPCCookingBehavior 가 없거나 모양이 달라지면 연결을 포기합니다.
+    그때는 양념기를 피하기만 하던 지금까지의 동작이 됩니다.
 
 
 [ 왈리가 "재료가 없어요" 라고 할 때 ]

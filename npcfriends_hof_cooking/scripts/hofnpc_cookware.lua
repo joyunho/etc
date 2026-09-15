@@ -28,7 +28,8 @@
 -- list itself rather than going through this function, so a finished seasoning
 -- station still gets emptied.
 
-local Core = require("hofnpc_core")
+local Core  = require("hofnpc_core")
+local Spice = require("hofnpc_spice")
 
 local Cookware = {}
 
@@ -119,6 +120,21 @@ local function PickFrom(pots, key, want_done)
 end
 
 function Cookware.FindAvailableCookpot(cookpots)
+	-- A seasoning station is normally excluded, because the chef cannot load
+	-- one. When hofnpc_spice has a job lined up it can, so hand it over.
+	if Spice.Wanted() then
+		for _, pot in ipairs(cookpots or {}) do
+			if Usable(pot) and Spice.IsStation(pot) then
+				local stewer = pot.components.stewer
+				if not stewer:IsCooking() and not stewer:IsDone() then
+					Core.Log("spicing at", tostring(pot.prefab))
+					Spice.Claim(Spice.pending)
+					return pot
+				end
+			end
+		end
+	end
+
 	local usable, skipped = {}, 0
 
 	for _, pot in ipairs(cookpots or {}) do

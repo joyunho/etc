@@ -38,6 +38,7 @@ fi
 step "Unit tests"
 if "$LUA" tests/test_search.lua; then ok "tests/test_search.lua"; else bad "tests/test_search.lua"; fi
 if "$LUA" tests/test_cookware.lua >/dev/null; then ok "tests/test_cookware.lua"; else bad "tests/test_cookware.lua"; fi
+if "$LUA" tests/test_spice.lua >/dev/null; then ok "tests/test_spice.lua"; else bad "tests/test_spice.lua"; fi
 
 step "Integration tests (through the shipped file)"
 if "$LUA" tests/test_merged.lua; then ok "tests/test_merged.lua"; else bad "tests/test_merged.lua"; fi

@@ -67,6 +67,7 @@ local MODS =
 		{
 			{ module = "ko_foodrecipes",       cookers = { "cookpot", "portablecookpot", "archive_cookpot" } },
 			{ module = "ko_foodrecipes_warly", cookers = { "portablecookpot" } },
+			{ module = "ko_foodspicer",        cookers = { "portablespicer" } },
 		},
 	},
 	{
@@ -82,6 +83,7 @@ local MODS =
 		recipes =
 		{
 			{ module = "htf_foodrecipes", cookers = { "cookpot", "portablecookpot", "archive_cookpot" } },
+			{ module = "htf_foodspicer",  cookers = { "portablespicer" } },
 		},
 	},
 	{
@@ -313,6 +315,84 @@ else
 	local chosen = Cookware.FindAvailableCookpot({ Station("portablespicer"), Station("cookpot") })
 	check("a seasoning station next to the pot does not stall the chef",
 		chosen ~= nil and chosen.prefab == "cookpot", chosen and chosen.prefab or "nil")
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+--  Spicing, against DST's own 316 spiced recipes
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- hofnpc_spice reads a spiced recipe's own basename and spice rather than
+-- searching for anything. That only works if every spiced recipe really does
+-- carry them, so count them in the live table.
+
+local Spice = require("hofnpc_spice")
+
+do
+	local spicer = cooking.recipes.portablespicer or {}
+	local total, stated = 0, 0
+	for _, recipe in pairs(spicer) do
+		total = total + 1
+		if recipe.basename ~= nil and recipe.spice ~= nil then stated = stated + 1 end
+	end
+
+	print("")
+	print(string.format("  --    %d spiced recipes registered, %d state their own dish and spice",
+		total, stated))
+	check("every spiced recipe states what it is made of", total > 0 and stated == total,
+		stated .. "/" .. total)
+
+	-- And the mods' own spiced dishes are in there: both run DST's
+	-- GenerateSpicedFoods over their food tables.
+	local modspiced = 0
+	for name, recipe in pairs(spicer) do
+		if recipe.basename ~= nil and moddish[recipe.basename] ~= nil then modspiced = modspiced + 1 end
+	end
+	print(string.format("  --    %d of them are spiced versions of the food mods' dishes", modspiced))
+	check("the food mods' dishes can be spiced too", modspiced > 0, tostring(modspiced))
+
+	-- Pick a job the way the chef would, from a real station and a real chest.
+	local held = {}
+	local function Item(prefab, tags, stack)
+		local set = {}
+		for _, tag in ipairs(tags) do set[tag] = true end
+		return { prefab = prefab, IsValid = function() return true end,
+			HasTag = function(_, tag) return set[tag] == true end,
+			components = stack and { stackable = { StackSize = function() return stack end } } or {} }
+	end
+	held[1] = Item("meatballs", { "preparedfood" }, 3)
+	held[2] = Item("spice_garlic", { "spice" }, 2)
+
+	local chest =
+	{
+		IsValid = function() return true end,
+		components = { container = {
+			GetNumSlots   = function() return 9 end,
+			GetItemInSlot = function(_, slot) return held[slot] end,
+		} },
+	}
+
+	local station =
+	{
+		prefab = "portablespicer", GUID = 1, IsValid = function() return true end,
+		components =
+		{
+			container = { numslots = 2, GetNumSlots = function() return 2 end },
+			stewer = { IsCooking = function() return false end, IsDone = function() return false end },
+		},
+	}
+
+	check("a real seasoning station is recognised", Spice.IsStation(station))
+
+	Core.Configure({ enabled = true, use_spicer = true, same_dish_max = 3, allow_negative = true })
+	local job = Spice.Choose(station, Spice.Scan({ chest }), {})
+	check("a job is picked from the real recipe table",
+		job ~= nil and job.product == "meatballs_spice_garlic", job and job.product or "nil")
+
+	-- The forced product has to exist in the station's table, because
+	-- Stewer:StartCooking indexes cooking.GetRecipe(prefab, product).perishtime
+	-- straight after, with no nil check.
+	check("the dish it names is a recipe the station knows",
+		job ~= nil and cooking.recipes.portablespicer[job.product] ~= nil)
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════

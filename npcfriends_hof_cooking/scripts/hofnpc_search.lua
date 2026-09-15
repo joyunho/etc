@@ -40,6 +40,7 @@ local cooking  = require("cooking")
 
 local Core     = require("hofnpc_core")
 local Variety  = require("hofnpc_variety")
+local Spice    = require("hofnpc_spice")
 
 local Search = {}
 
@@ -880,6 +881,18 @@ function Search.Choose(pool, existing_dishes, is_warly, cooker_name)
 	end
 
 	existing_dishes = existing_dishes or {}
+
+	-- The station chooser ran a moment ago. If it sent the chef to a seasoning
+	-- station, the dish is already decided and there is nothing to search for:
+	-- a spiced recipe states its own two ingredients.
+	local spicing = Spice.Take(Spice.npc)
+	if spicing ~= nil then
+		local card = Spice.Card(spicing)
+		if card ~= nil then
+			Variety.Record(card.name)
+			return card
+		end
+	end
 
 	-- The panel's "음식 최대 개수": stop entirely once the larder is that full.
 	local total_max = Core.TotalDishMax()
