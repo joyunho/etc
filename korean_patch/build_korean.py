@@ -147,6 +147,15 @@ local pcall = GLOBAL.pcall
 local select = GLOBAL.select
 local type = GLOBAL.type
 
+-- 다른 모드의, 또는 우리 자신의 lua 모듈을 가져옵니다. 없으면 nil 입니다.
+local function Module(name)
+	local ok, mod = pcall(require, name)
+	if ok and type(mod) == "table" then
+		return mod
+	end
+	return nil
+end
+
 local function Translate()
 	local STRINGS = GLOBAL.STRINGS
 	local Index = GLOBAL.KnownModIndex
@@ -219,16 +228,9 @@ local function Translate()
 		end
 	end
 
-	-- 다른 모드의 lua 모듈을 가져옵니다. 없으면 nil 입니다.
-	local function Module(name)
-		local ok, mod = pcall(require, name)
-		if ok and type(mod) == "table" then
-			return mod
-		end
-		return nil
-	end
-
 """
+    overlay = (HERE / "guide_overlay.lua").read_text(encoding="utf-8") \
+        if (HERE / "guide_overlay.lua").exists() else ""
     footer = """
 end
 
@@ -244,13 +246,15 @@ end
 AddSimPostInit(function()
 	pcall(Translate)
 end)
+
+{overlay}
 """
 
     # every generated line sits inside ApplyAll(), so indent the body one step
     indented = "\n".join(("\t" + l) if l.strip() else l for l in body)
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(header + indented + footer, encoding="utf-8")
+    OUT.write_text(header + indented + footer.format(overlay=overlay), encoding="utf-8")
     print(f"wrote {OUT}  ({len(merged)} mods, {total} strings)")
 
 

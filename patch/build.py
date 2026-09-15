@@ -717,7 +717,10 @@ def main() -> None:
         subprocess.run([sys.executable, str(korean_src / "build_korean.py")], check=True,
                        stdout=subprocess.DEVNULL)
         korean_dst = BUILD / "files" / "mod_korean_patch"
-        for rel in ("modinfo.lua", "modmain.lua"):
+        rels = ["modinfo.lua", "modmain.lua"]
+        # 가이드 본문 덮어쓰기 자료. 클 수 있어서 modmain 에 넣지 않고 따로 둡니다.
+        rels += [str(f.relative_to(korean_src)) for f in sorted((korean_src / "scripts").glob("*.lua"))]
+        for rel in rels:
             src = korean_src / rel
             dst = korean_dst / rel
             dst.parent.mkdir(parents=True, exist_ok=True)
