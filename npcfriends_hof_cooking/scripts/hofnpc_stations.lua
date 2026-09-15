@@ -1,5 +1,6 @@
--- hofnpc_spice.lua
--- Makes the chef use Warly's Portable Seasoning Station.
+-- hofnpc_stations.lua
+-- Makes the chef use the machines its own behaviour cannot: Warly's Portable
+-- Seasoning Station, and drying racks.
 --
 -- ── Why this needs its own file ────────────────────────────────────────────
 --
@@ -57,52 +58,71 @@ local cooking = require("cooking")
 
 local Core = require("hofnpc_core")
 
-local Spice = {}
+local Stations = {}
 
 local POT_SLOTS   = 4
 local SPICE_SLOTS = 2
 
+-- ── Drying racks ───────────────────────────────────────────────────────────
+--
+-- A rack is further from a Crock Pot than the seasoning station is. It has no
+-- container at all -- one item goes straight onto it -- and its component
+-- speaks a different language: CanDry/StartDrying/IsDrying where a pot says
+-- CanCook/StartCooking/IsCooking. It also carries none of the tags NPC Friends
+-- searches for, so it never even reaches the list of things to cook in.
+--
+-- So a rack is handed to the behaviour wrapped in a stand-in: a small table
+-- that forwards position, validity and tags to the real rack, and answers
+-- `components.stewer` with an adapter over the dryer. The stand-in exists only
+-- inside the behaviour -- the rack in the world is never given a component it
+-- does not have, so nothing else in the game, and no save file, ever sees it.
+--
+-- Loading is the vanilla DRY action, in the order actions.lua does it:
+-- CanDry, then RemoveItem from the chef, then StartDrying -- which consumes
+-- the item entity itself (dryer.lua: `dryable:Remove()`), so nothing is left
+-- to clean up. Harvesting is the behaviour's own, through the same adapter.
+
 -- Enough strikes and we stop offering the station for this server session.
 local STRIKE_LIMIT = 3
 
-Spice.attached  = false
-Spice.strikes   = 0
-Spice._orig     = {}
+Stations.attached  = false
+Stations.strikes   = 0
+Stations._orig     = {}
 
 -- One chef on the surface and one in the caves plan independently, so the job
 -- in hand is kept per NPC rather than in a single slot the two would fight
 -- over. `pending` is what the station chooser may take this pass; `jobs` is
 -- what a chef is actually carrying out.
-Spice.pending = nil
-Spice.npc     = nil
-Spice.jobs    = {}
-Spice.last    = {}   -- [guid] = true when that chef's last job was a spicing one
+Stations.pending = nil
+Stations.npc     = nil
+Stations.jobs    = {}
+Stations.last    = {}   -- [guid] = true when that chef's last job was a spicing one
 
 -- A name no prefab can have, used to pad the take list up to the four the
 -- behaviour insists on. Our put function is the only thing that ever reads it.
-local PAD = "\1hofnpc_spice_pad"
+local PAD = "\1hofnpc_stations_pad"
 
-function Spice.Reset()
-	Spice.strikes = 0
-	Spice.pending = nil
-	Spice.npc     = nil
-	Spice.jobs    = {}
-	Spice.last    = {}
+function Stations.Reset()
+	Stations.strikes = 0
+	Stations.pending = nil
+	Stations.npc     = nil
+	Stations.jobs    = {}
+	Stations.last    = {}
 end
 
 local function Key(ent)
 	return ent ~= nil and (ent.GUID or ent) or nil
 end
 
-function Spice.Take(npc)
+function Stations.Take(npc)
 	local key = Key(npc)
-	return key ~= nil and Spice.jobs[key] or nil
+	return key ~= nil and Stations.jobs[key] or nil
 end
 
-function Spice.Claim(job)
-	local key = Key(Spice.npc)
+function Stations.Claim(job)
+	local key = Key(Stations.npc)
 	if key ~= nil then
-		Spice.jobs[key] = job
+		Stations.jobs[key] = job
 	end
 	return job
 end
@@ -135,7 +155,7 @@ end
 -- the spice, and has spiced recipes registered against its prefab. The last
 -- part is what keeps this off a modded two-slot cooker that means something
 -- else entirely.
-function Spice.IsStation(ent)
+function Stations.IsStation(ent)
 	if ent == nil or ent.components == nil or ent.components.stewer == nil then
 		return false
 	end
@@ -185,7 +205,7 @@ end
 -- Walks the chef's containers once and notes every cooked dish that has not
 -- been spiced yet, and every spice. Neither is a cooking ingredient, so NPC
 -- Friends' own ScanIngredients never sees them.
-function Spice.Scan(containers)
+function Stations.Scan(containers)
 	local dishes, spices = {}, {}
 
 	for _, container in ipairs(containers or {}) do
@@ -233,7 +253,7 @@ end
 
 -- The spiced dish is worth making when we hold the dish, hold the spice, the
 -- station knows the recipe, and the larder is not already full of the result.
-function Spice.Choose(station, pantry, existing_dishes)
+function Stations.Choose(station, pantry, existing_dishes)
 	if station == nil or pantry == nil then
 		return nil
 	end
@@ -246,7 +266,7 @@ function Spice.Choose(station, pantry, existing_dishes)
 	existing_dishes = existing_dishes or {}
 	local same_max  = Core.SameDishMax()
 
-	-- Spice prefab names are the lower case of the recipe's spice field:
+	-- Stations prefab names are the lower case of the recipe's spice field:
 	-- SPICE_GARLIC -> spice_garlic (scripts/spicedfoods.lua).
 	local best, best_score = nil, nil
 
@@ -261,7 +281,7 @@ function Spice.Choose(station, pantry, existing_dishes)
 			local spice_at = pantry.spices[string.lower(spice)]
 
 			if dish_at ~= nil and spice_at ~= nil then
-				-- Spice what there is most of, so the chef works through a pile
+				-- Stations what there is most of, so the chef works through a pile
 				-- of the same dish instead of picking at the rare ones.
 				local score = (dish_at.count or 1) * 2 + (spice_at.count or 1)
 
@@ -269,6 +289,7 @@ function Spice.Choose(station, pantry, existing_dishes)
 					best_score = score
 					best =
 					{
+						kind     = "spice",
 						product  = product,
 						cooktime = recipe.cooktime or 1,
 						dish     = { prefab = base, at = dish_at },
@@ -284,7 +305,7 @@ end
 
 -- The card NPC Friends' PlanCooking expects back from FindBestRecipe. Only two
 -- ingredients: the walk and the pickup are theirs, the loading is ours.
-function Spice.Card(job)
+function Stations.Card(job)
 	if job == nil then
 		return nil
 	end
@@ -299,15 +320,206 @@ function Spice.Card(job)
 		}
 	end
 
+	local items = job.kind == "dry"
+		and { At(job.item) }
+		or  { At(job.dish), At(job.spice) }
+
 	return
 	{
 		name                  = job.product,
 		score                 = 0,
 		cooktime              = job.cooktime,
-		_selected_ingredients = { At(job.dish), At(job.spice) },
+		_selected_ingredients = items,
 		_hofnpc               = true,
-		_hofnpc_spice         = true,
+		_hofnpc_side          = job.kind or "spice",
 	}
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+--  Drying racks
+-- ═══════════════════════════════════════════════════════════════════════════
+
+function Stations.IsDryer(ent)
+	return ent ~= nil
+		and ent.components ~= nil
+		and ent.components.dryer ~= nil
+end
+
+Stations.proxies = setmetatable({}, { __mode = "k" })
+
+-- The stand-in. Only the behaviour ever holds one.
+function Stations.Proxy(rack)
+	local cached = Stations.proxies[rack]
+	if cached ~= nil then
+		return cached
+	end
+
+	local dryer = rack.components.dryer
+
+	local adapter =
+	{
+		-- A pot's words, answered by the rack.
+		IsCooking = function() return dryer:IsDrying() end,
+		IsDone    = function() return dryer:IsDone() end,
+		CanCook   = function() return dryer.product == nil and not dryer:IsDrying() end,
+
+		-- Drying starts the moment the item lands, so there is nothing left to
+		-- light. Saying yes keeps the behaviour's "did it start?" check happy.
+		StartCooking = function() return true end,
+
+		Harvest = function(_, harvester) return dryer:Harvest(harvester) end,
+	}
+
+	-- product is read by the harvest step to name what came out.
+	setmetatable(adapter, { __index = function(_, k)
+		if k == "product" then return dryer.product end
+		return nil
+	end })
+
+	local proxy =
+	{
+		prefab  = rack.prefab,
+		GUID    = rack.GUID,
+		Transform = rack.Transform,
+		components = { stewer = adapter },
+
+		IsValid     = function() return rack:IsValid() end,
+		GetPosition = function() return rack:GetPosition() end,
+		HasTag      = function(_, tag) return rack:HasTag(tag) end,
+
+		_hofnpc_rack = rack,
+	}
+
+	Stations.proxies[rack] = proxy
+	return proxy
+end
+
+function Stations.IsDryProxy(ent)
+	return ent ~= nil and ent._hofnpc_rack ~= nil
+end
+
+-- Any machine the chef can only work through this file.
+function Stations.IsSideStation(ent)
+	return Stations.IsDryProxy(ent) or Stations.IsStation(ent)
+end
+
+-- Items in the chests that a rack would take. Dryables are not cooking
+-- ingredients either, so ScanIngredients never reports them.
+function Stations.ScanDryables(containers)
+	local found = {}
+
+	for _, container in ipairs(containers or {}) do
+		pcall(function()
+			if not container:IsValid() or container.components == nil
+				or container.components.container == nil then
+				return
+			end
+
+			local cont = container.components.container
+
+			for slot = 1, cont:GetNumSlots() do
+				local item = cont:GetItemInSlot(slot)
+
+				if item ~= nil and item:IsValid()
+					and item.components ~= nil and item.components.dryable ~= nil
+					and found[item.prefab] == nil then
+
+					local ok, product = pcall(item.components.dryable.GetProduct, item.components.dryable)
+					local ok2, time   = pcall(item.components.dryable.GetDryTime, item.components.dryable)
+
+					if ok and type(product) == "string" then
+						found[item.prefab] =
+						{
+							container = container,
+							slot      = slot,
+							count     = StackSize(item),
+							product   = product,
+							drytime   = ok2 and time or 1,
+						}
+					end
+				end
+			end
+		end)
+	end
+
+	return found
+end
+
+-- Racks near the chef, the same way NPC Friends finds its pots: around the
+-- cooking centre the player set, within the radius it uses for farm work.
+local RACK_RADIUS = 17
+
+function Stations.Racks(inst)
+	local out = {}
+
+	if inst == nil or rawget(_G, "TheSim") == nil then
+		return out
+	end
+
+	local centre = inst._cooking_center
+	local x, z
+
+	if type(centre) == "table" and centre.x ~= nil then
+		x, z = centre.x, centre.z
+	elseif type(inst.GetPosition) == "function" then
+		local pos = inst:GetPosition()
+		x, z = pos.x, pos.z
+	else
+		return out
+	end
+
+	local ok, found = pcall(function()
+		return TheSim:FindEntities(x, 0, z, RACK_RADIUS, { "dryer" })
+	end)
+
+	if not ok or type(found) ~= "table" then
+		-- Not every build tags a rack "dryer"; fall back to reading components.
+		ok, found = pcall(function()
+			return TheSim:FindEntities(x, 0, z, RACK_RADIUS, nil, { "INLIMBO", "burnt" })
+		end)
+		if not ok or type(found) ~= "table" then
+			return out
+		end
+	end
+
+	for _, ent in ipairs(found) do
+		if ent:IsValid() and Stations.IsDryer(ent) then
+			out[#out + 1] = ent
+		end
+	end
+
+	return out
+end
+
+function Stations.ChooseDry(rack, dryables, existing_dishes)
+	if rack == nil or dryables == nil then
+		return nil
+	end
+
+	existing_dishes = existing_dishes or {}
+	local same_max  = Core.SameDishMax()
+
+	local best, best_score = nil, nil
+
+	for prefab, at in pairs(dryables) do
+		if (existing_dishes[at.product] or 0) < same_max then
+			-- Dry what there is most of; a single mushroom is better eaten.
+			local score = at.count or 1
+
+			if best_score == nil or score > best_score then
+				best_score = score
+				best =
+				{
+					kind     = "dry",
+					product  = at.product,
+					cooktime = at.drytime or 1,
+					item     = { prefab = prefab, at = at },
+				}
+			end
+		end
+	end
+
+	return best
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -317,8 +529,21 @@ end
 -- True when the plan in hand is a spice job, judged from the station itself
 -- rather than from a flag: PlanCooking builds its own table and does not carry
 -- our marker across.
-local function PlanIsSpice(plan)
-	return plan ~= nil and Spice.IsStation(plan.cookpot)
+local function PlanKind(plan)
+	if plan == nil then
+		return nil
+	end
+	if Stations.IsDryProxy(plan.cookpot) then
+		return "dry"
+	end
+	if Stations.IsStation(plan.cookpot) then
+		return "spice"
+	end
+	return nil
+end
+
+local function PlanIsSideJob(plan)
+	return PlanKind(plan) ~= nil
 end
 
 local function LoadStation(npc, station, plan)
@@ -335,7 +560,7 @@ local function LoadStation(npc, station, plan)
 		return false
 	end
 
-	local job = Spice.Take(npc)
+	local job = Stations.Take(npc)
 	if job == nil then
 		return false
 	end
@@ -397,8 +622,59 @@ local function LoadStation(npc, station, plan)
 	return true
 end
 
-function Spice.Attach(planner)
-	if Spice.attached then
+-- The vanilla DRY action, in actions.lua's order: check, detach from the chef,
+-- then start. StartDrying removes the item entity itself when it succeeds
+-- (dryer.lua: `dryable:Remove()`), and when it fails the item has to go back in
+-- the bag or it is gone for good.
+local function LoadDryer(npc, proxy, plan)
+	local rack = proxy ~= nil and proxy._hofnpc_rack or nil
+	if rack == nil or not rack:IsValid() or rack.components.dryer == nil then
+		return false
+	end
+
+	local job = Stations.Take(npc)
+	if job == nil or job.kind ~= "dry" then
+		return false
+	end
+
+	local dryer     = rack.components.dryer
+	local inventory = npc.components ~= nil and npc.components.inventory or nil
+	if inventory == nil then
+		return false
+	end
+
+	for slot = 1, (inventory.maxslots or 0) do
+		local item = inventory:GetItemInSlot(slot)
+
+		if item ~= nil and item:IsValid() and item.prefab == job.item.prefab then
+			local one
+
+			local stackable = item.components ~= nil and item.components.stackable or nil
+			if stackable ~= nil and StackSize(item) > 1 then
+				one = stackable:Get(1)
+			else
+				one = inventory:RemoveItem(item)
+			end
+
+			if one == nil then
+				return false
+			end
+
+			if not dryer:CanDry(one) or not dryer:StartDrying(one) then
+				inventory:GiveItem(one)
+				return false
+			end
+
+			Core.Log("drying:", tostring(job.item.prefab), "->", tostring(job.product))
+			return true
+		end
+	end
+
+	return false
+end
+
+function Stations.Attach(planner)
+	if Stations.attached then
 		return true
 	end
 
@@ -408,19 +684,39 @@ function Spice.Attach(planner)
 		return false
 	end
 
-	Spice._orig.take = class._MakeTakeActionFn
-	Spice._orig.put  = class._MakePutActionFn
+	Stations._orig.take = class._MakeTakeActionFn
+	Stations._orig.put  = class._MakePutActionFn
+
+	-- A rack carries none of the tags NPC Friends searches for, so it never
+	-- appears in the list of things to cook in. This is the list.
+	if type(class._GetCookpots) == "function" then
+		Stations._orig.pots = class._GetCookpots
+
+		class._GetCookpots = function(self)
+			local pots = Stations._orig.pots(self) or {}
+
+			if Core.cfg.enabled and Core.cfg.use_dryer then
+				pcall(function()
+					for _, rack in ipairs(Stations.Racks(self.inst)) do
+						pots[#pots + 1] = Stations.Proxy(rack)
+					end
+				end)
+			end
+
+			return pots
+		end
+	end
 
 	-- Their gate counts this list, and the list holds prefab names, so padding
 	-- it is enough to be let through to the station. The padding never reaches
 	-- their loader: the put wrapper below takes over for a spice job.
 	class._MakeTakeActionFn = function(self, items, taken)
-		local inner = Spice._orig.take(self, items, taken)
+		local inner = Stations._orig.take(self, items, taken)
 
 		return function(npc, container)
 			inner(npc, container)
 
-			if PlanIsSpice(self._plan) then
+			if PlanIsSideJob(self._plan) then
 				while #taken < POT_SLOTS do
 					taken[#taken + 1] = PAD
 				end
@@ -429,55 +725,65 @@ function Spice.Attach(planner)
 	end
 
 	class._MakePutActionFn = function(self, taken, plan, node)
-		if not PlanIsSpice(plan) then
-			return Spice._orig.put(self, taken, plan, node)
+		if not PlanIsSideJob(plan) then
+			return Stations._orig.put(self, taken, plan, node)
 		end
 
+		local kind = PlanKind(plan)
+
 		return function(npc, station)
-			local ok, started = pcall(LoadStation, npc, station, plan)
+			local load = (kind == "dry") and LoadDryer or LoadStation
+			local ok, started = pcall(load, npc, station, plan)
 
 			if not ok then
-				Core.Err("loading the seasoning station failed:", tostring(started))
+				Core.Err("loading a " .. tostring(kind) .. " station failed:", tostring(started))
 				started = false
 			end
 
 			if started then
-				Spice.strikes = 0
+				Stations.strikes = 0
 				if node ~= nil then
 					node._cook_start_time = GetTime()
 				end
 			else
-				Spice.strikes = Spice.strikes + 1
-				if Spice.strikes >= STRIKE_LIMIT then
-					Core.Info("the seasoning station is not taking orders -- leaving it alone from now on")
+				Stations.strikes = Stations.strikes + 1
+				if Stations.strikes >= STRIKE_LIMIT then
+					Core.Info("these stations are not taking orders -- leaving them alone from now on")
 				end
 			end
 
 			local key = Key(npc)
 			if key ~= nil then
-				Spice.jobs[key] = nil
+				Stations.jobs[key] = nil
 			end
 		end
 	end
 
-	Spice.attached = true
+	Stations.attached = true
 	Core.Log("the chef can use a seasoning station")
 	return true
 end
 
 -- Whether the chef should be sent to a station right now. Never twice running:
 -- spicing is quick and a chef that only ever spices stops filling the larder.
-function Spice.Wanted()
-	if not Core.cfg.enabled or not Core.cfg.use_spicer then
+function Stations.Wanted()
+	if not Core.cfg.enabled then
 		return false
 	end
 
-	if not Spice.attached or Spice.strikes >= STRIKE_LIMIT or Spice.pending == nil then
+	if not Stations.attached or Stations.strikes >= STRIKE_LIMIT or Stations.pending == nil then
 		return false
 	end
 
-	local key = Key(Spice.npc)
-	return key == nil or not Spice.last[key]
+	-- Each kind of machine has its own switch.
+	if Stations.pending.kind == "dry" then
+		if not Core.cfg.use_dryer then return false end
+	elseif not Core.cfg.use_spicer then
+		return false
+	end
+
+	local key = Key(Stations.npc)
+	return key == nil or not Stations.last[key]
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -489,8 +795,8 @@ end
 -- hands us the chef, its containers and its stations, which is everything the
 -- answer needs.
 
-function Spice.AttachPlanner(planner)
-	if planner == nil or planner._hofnpc_spice_attached then
+function Stations.AttachPlanner(planner)
+	if planner == nil or planner._hofnpc_stations_attached then
 		return false
 	end
 
@@ -499,59 +805,68 @@ function Spice.AttachPlanner(planner)
 		return false
 	end
 
-	planner._hofnpc_spice_attached = true
+	planner._hofnpc_stations_attached = true
 
 	planner.PlanCooking = function(inst, containers, cookpots, is_warly)
-		Spice.pending = nil
-		Spice.npc     = inst
+		Stations.pending = nil
+		Stations.npc     = inst
 
 		-- The behaviour class only exists once a chef's brain has been built,
 		-- which is after this file is loaded, so attaching waits until here.
-		if not Spice.attached and Core.cfg.use_spicer then
-			pcall(Spice.Attach, planner)
+		if not Stations.attached and Core.cfg.use_spicer then
+			pcall(Stations.Attach, planner)
 		end
 
-		if Spice.attached and Core.cfg.use_spicer and Spice.strikes < STRIKE_LIMIT then
+		if Stations.attached and Stations.strikes < STRIKE_LIMIT then
 			pcall(function()
-				local station = nil
-				for _, ent in ipairs(cookpots or {}) do
-					if ent ~= nil and ent:IsValid() and Spice.IsStation(ent) then
-						local stewer = ent.components.stewer
-						if not stewer:IsCooking() and not stewer:IsDone() then
-							station = ent
+				local existing = {}
+				if type(planner.CountExistingDishes) == "function" then
+					local ok, counted = pcall(planner.CountExistingDishes, containers)
+					if ok and type(counted) == "table" then
+						existing = counted
+					end
+				end
+
+				local function Idle(ent)
+					local stewer = ent.components.stewer
+					return not stewer:IsCooking() and not stewer:IsDone()
+				end
+
+				-- A seasoning station first: spicing something already cooked is
+				-- worth more than drying something that could still be cooked.
+				if Core.cfg.use_spicer then
+					for _, ent in ipairs(cookpots or {}) do
+						if ent ~= nil and ent:IsValid() and Stations.IsStation(ent) and Idle(ent) then
+							Stations.pending = Stations.Choose(ent, Stations.Scan(containers), existing)
 							break
 						end
 					end
 				end
 
-				if station ~= nil then
-					local existing = {}
-					if type(planner.CountExistingDishes) == "function" then
-						local ok, counted = pcall(planner.CountExistingDishes, containers)
-						if ok and type(counted) == "table" then
-							existing = counted
+				if Stations.pending == nil and Core.cfg.use_dryer then
+					for _, ent in ipairs(cookpots or {}) do
+						if ent ~= nil and ent:IsValid() and Stations.IsDryProxy(ent) and Idle(ent) then
+							Stations.pending = Stations.ChooseDry(ent, Stations.ScanDryables(containers), existing)
+							break
 						end
 					end
-
-					Spice.pending = Spice.Choose(station, Spice.Scan(containers), existing)
 				end
 			end)
 		end
-
 		local plan = plan_cooking(inst, containers, cookpots, is_warly)
 
 		local key = Key(inst)
 		if key ~= nil then
 			if plan == nil then
 				-- Nothing came of it, so nothing is being carried out.
-				Spice.jobs[key] = nil
+				Stations.jobs[key] = nil
 			else
-				Spice.last[key] = PlanIsSpice(plan)
+				Stations.last[key] = PlanIsSideJob(plan)
 			end
 		end
 
-		Spice.pending = nil
-		Spice.npc     = nil
+		Stations.pending = nil
+		Stations.npc     = nil
 
 		return plan
 	end
@@ -559,4 +874,4 @@ function Spice.AttachPlanner(planner)
 	return true
 end
 
-return Spice
+return Stations

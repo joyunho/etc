@@ -29,7 +29,7 @@
 -- station still gets emptied.
 
 local Core  = require("hofnpc_core")
-local Spice = require("hofnpc_spice")
+local Stations = require("hofnpc_stations")
 
 local Cookware = {}
 
@@ -120,15 +120,22 @@ local function PickFrom(pots, key, want_done)
 end
 
 function Cookware.FindAvailableCookpot(cookpots)
-	-- A seasoning station is normally excluded, because the chef cannot load
-	-- one. When hofnpc_spice has a job lined up it can, so hand it over.
-	if Spice.Wanted() then
+	-- A seasoning station or a drying rack is normally kept out of the chef's
+	-- way, because its own behaviour cannot load either. When hofnpc_stations
+	-- has a job lined up it can, so hand the machine over.
+	local job = Stations.Wanted() and Stations.pending or nil
+
+	if job ~= nil then
+		local want_dryer = job.kind == "dry"
+
 		for _, pot in ipairs(cookpots or {}) do
-			if Usable(pot) and Spice.IsStation(pot) then
+			local right = want_dryer and Stations.IsDryProxy(pot) or Stations.IsStation(pot)
+
+			if Usable(pot) and right then
 				local stewer = pot.components.stewer
 				if not stewer:IsCooking() and not stewer:IsDone() then
-					Core.Log("spicing at", tostring(pot.prefab))
-					Spice.Claim(Spice.pending)
+					Core.Log(want_dryer and "drying at" or "spicing at", tostring(pot.prefab))
+					Stations.Claim(job)
 					return pot
 				end
 			end
@@ -138,7 +145,10 @@ function Cookware.FindAvailableCookpot(cookpots)
 	local usable, skipped = {}, 0
 
 	for _, pot in ipairs(cookpots or {}) do
-		if Usable(pot) then
+		-- Machines only hofnpc_stations can work are never ordinary pots, and a
+		-- drying rack has no container at all, so the slot test would wave it
+		-- through as if it were one.
+		if Usable(pot) and not Stations.IsSideStation(pot) then
 			if Cookware.CanTakeLoad(pot) then
 				usable[#usable + 1] = pot
 			else

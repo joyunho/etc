@@ -40,7 +40,7 @@ local cooking  = require("cooking")
 
 local Core     = require("hofnpc_core")
 local Variety  = require("hofnpc_variety")
-local Spice    = require("hofnpc_spice")
+local Stations    = require("hofnpc_stations")
 
 local Search = {}
 
@@ -885,9 +885,9 @@ function Search.Choose(pool, existing_dishes, is_warly, cooker_name)
 	-- The station chooser ran a moment ago. If it sent the chef to a seasoning
 	-- station, the dish is already decided and there is nothing to search for:
 	-- a spiced recipe states its own two ingredients.
-	local spicing = Spice.Take(Spice.npc)
+	local spicing = Stations.Take(Stations.npc)
 	if spicing ~= nil then
-		local card = Spice.Card(spicing)
+		local card = Stations.Card(spicing)
 		if card ~= nil then
 			Variety.Record(card.name)
 			return card

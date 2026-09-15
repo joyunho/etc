@@ -20,7 +20,7 @@ local Variety = require("hofnpc_variety")
 local Diag    = require("hofnpc_diag")
 local Slots   = require("hofnpc_slots")
 local Cookware = require("hofnpc_cookware")
-local Spice    = require("hofnpc_spice")
+local Stations    = require("hofnpc_stations")
 
 local Patch = {}
 
@@ -87,7 +87,7 @@ function Patch.TryApply()
 	pcall(Slots.Attach, planner)
 	pcall(Diag.Attach, planner)
 	pcall(Cookware.Attach, planner)
-	pcall(Spice.AttachPlanner, planner)
+	pcall(Stations.AttachPlanner, planner)
 
 	Patch._orig = planner.FindBestRecipe
 
@@ -186,7 +186,7 @@ function Patch.OnWorldStart()
 	Search.ResetCache()
 	Variety.Reset()
 	Cookware.Reset()
-	Spice.Reset()
+	Stations.Reset()
 	Core.ClearScoreCache()
 end
 

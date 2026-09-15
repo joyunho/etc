@@ -48,7 +48,7 @@ MERGE_ORDER = [
     (SCRIPTS / "hofnpc_core.lua", "Core"),
     (SCRIPTS / "hofnpc_slots.lua", "Slots"),
     (SCRIPTS / "hofnpc_variety.lua", "Variety"),
-    (SCRIPTS / "hofnpc_spice.lua", "Spice"),
+    (SCRIPTS / "hofnpc_stations.lua", "Stations"),
     (SCRIPTS / "hofnpc_search.lua", "Search"),
     (SCRIPTS / "hofnpc_cookware.lua", "Cookware"),
     (SCRIPTS / "hofnpc_diag.lua", "Diag"),
@@ -324,6 +324,37 @@ NPC Friends 의 왈리 NPC 가 Heap of Foods 를 비롯한 음식 모드의 요�
   * 양념기가 계속 거부하면 세 번 만에 포기하고 원래대로 돌아갑니다.
   * NPCCookingBehavior 가 없거나 모양이 달라지면 연결을 포기합니다.
     그때는 양념기를 피하기만 하던 지금까지의 동작이 됩니다.
+
+
+[ 건조대 쓰게 하기 - use_dryer ]   (기본 꺼짐)
+
+  고기와 버섯을 건조대에 널어 말린 고기 / 말린 버섯을 만듭니다.
+  안 상하고 오래 가는 비상식량이 알아서 쌓입니다.
+  Heap of Foods 를 쓰시면 말릴 수 있는 것이 훨씬 많아집니다.
+
+  건조대는 냄비와 많이 다릅니다.
+
+    칸이 없습니다            한 개를 그냥 위에 올립니다
+    쓰는 말이 다릅니다       CanDry / StartDrying / IsDrying
+                             (냄비는 CanCook / StartCooking / IsCooking)
+    표가 안 달려 있습니다    NPC Friends 는 "stewer" 표로 냄비를 찾는데
+                             건조대에는 그 표가 없어서 목록에 안 뜹니다
+
+  그래서 건조대를 "냄비처럼 대답하는 대역"으로 감싸서 넘깁니다. 위치·유효성·
+  표는 진짜 건조대에게 물어보고, stewer 자리에는 건조 부품을 감싼 어댑터를
+  놓습니다. 이 대역은 행동 파일만 들고 있습니다 —
+  **세상에 있는 진짜 건조대에는 없는 부품을 붙이지 않습니다.**
+  그래서 다른 모드도, 세이브 파일도 이것을 보지 못합니다.
+
+  넣는 순서는 바닐라 DRY 행동 그대로입니다 (actions.lua).
+    CanDry 확인 -> 요리사 가방에서 빼기 -> StartDrying
+  StartDrying 이 성공하면 아이템 자체를 없앱니다(dryer.lua 의 dryable:Remove()).
+  실패하면 가방에 도로 넣습니다. 음식이 사라지지 않습니다.
+
+  * 양념기가 있으면 양념기를 먼저 씁니다. 이미 만든 요리에 양념을 하는 쪽이
+    아직 요리할 수 있는 재료를 말리는 것보다 낫기 때문입니다.
+  * 기본이 꺼짐인 이유는 양념기가 아직 게임에서 확인이 안 됐기 때문입니다.
+    한 번에 하나씩 확인하는 편이 낫습니다.
 
 
 [ 왈리가 "재료가 없어요" 라고 할 때 ]

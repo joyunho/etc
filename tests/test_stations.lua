@@ -1,9 +1,9 @@
--- test_spice.lua
+-- test_stations.lua
 --
 -- The seasoning station: picking a job, loading the station, and getting past
 -- NPC Friends' four-item gate.
 --
---   lua5.1 tests/test_spice.lua
+--   lua5.1 tests/test_stations.lua
 --
 -- The stand-in for NPCCookingBehavior below is not a guess. It mirrors what the
 -- shipped behaviour does, read out of the file itself:
@@ -53,7 +53,7 @@ for _, base in ipairs({ "meatballs", "bonestew", "wetgoop" }) do
 end
 
 local Core  = require("hofnpc_core")
-local Spice = require("hofnpc_spice")
+local Stations = require("hofnpc_stations")
 
 local failures = 0
 local function check(label, ok, detail)
@@ -206,10 +206,10 @@ print("=== 1. recognising a seasoning station ===")
 
 Core.Configure({ enabled = true, use_spicer = true, same_dish_max = 3, allow_negative = false })
 Core.SetHost({})
-Spice.Reset()
+Stations.Reset()
 
 local station = Station()
-check("a two-slot cooker with spiced recipes is a seasoning station", Spice.IsStation(station))
+check("a two-slot cooker with spiced recipes is a seasoning station", Stations.IsStation(station))
 
 local pot = {
 	prefab = "cookpot", GUID = NextGUID(), IsValid = function() return true end,
@@ -218,7 +218,7 @@ local pot = {
 		stewer = { IsCooking = function() return false end, IsDone = function() return false end },
 	},
 }
-check("a Crock Pot is not", not Spice.IsStation(pot))
+check("a Crock Pot is not", not Stations.IsStation(pot))
 
 local twoslot = {
 	prefab = "some_mod_thing", GUID = NextGUID(), IsValid = function() return true end,
@@ -227,7 +227,7 @@ local twoslot = {
 		stewer = { IsCooking = function() return false end, IsDone = function() return false end },
 	},
 }
-check("a two-slot cooker with no spiced recipes is not", not Spice.IsStation(twoslot))
+check("a two-slot cooker with no spiced recipes is not", not Stations.IsStation(twoslot))
 
 -- ═══════════════════════════════════════════════════════════════════════════
 print("")
@@ -240,27 +240,27 @@ local chest = Container{
 	Item("bonestew_spice_salt", { "preparedfood", "spicedfood" }),
 }
 
-local pantry = Spice.Scan({ chest })
+local pantry = Stations.Scan({ chest })
 check("the cooked dish is found",        pantry.dishes.meatballs ~= nil)
 check("the spice is found",              pantry.spices.spice_garlic ~= nil)
 check("a raw ingredient is not a dish",  pantry.dishes.berries == nil)
 check("an already spiced dish is left alone", pantry.dishes.bonestew_spice_salt == nil)
 
-local job = Spice.Choose(station, pantry, {})
+local job = Stations.Choose(station, pantry, {})
 check("a job is chosen", job ~= nil and job.product == "meatballs_spice_garlic",
 	job and job.product or "nil")
 check("it names the dish and the spice",
 	job ~= nil and job.dish.prefab == "meatballs" and job.spice.prefab == "spice_garlic")
 
 check("no job when the larder is already full of it",
-	Spice.Choose(station, pantry, { meatballs_spice_garlic = 3 }) == nil)
+	Stations.Choose(station, pantry, { meatballs_spice_garlic = 3 }) == nil)
 
 check("no job without a spice",
-	Spice.Choose(station, Spice.Scan({ Container{ Item("meatballs", { "preparedfood" }) } }), {}) == nil)
+	Stations.Choose(station, Stations.Scan({ Container{ Item("meatballs", { "preparedfood" }) } }), {}) == nil)
 check("no job without a dish",
-	Spice.Choose(station, Spice.Scan({ Container{ Item("spice_garlic", { "spice" }) } }), {}) == nil)
+	Stations.Choose(station, Stations.Scan({ Container{ Item("spice_garlic", { "spice" }) } }), {}) == nil)
 
-local card = Spice.Card(job)
+local card = Stations.Card(job)
 check("the card names the spiced dish", card.name == "meatballs_spice_garlic")
 check("and asks for exactly two items", #card._selected_ingredients == 2)
 
@@ -330,17 +330,17 @@ local planner =
 }
 Core.SetHost({ planner = planner })
 
-check("Attach finds the behaviour class", Spice.Attach(planner) == true)
+check("Attach finds the behaviour class", Stations.Attach(planner) == true)
 
 -- Run a spice job through it exactly as the behaviour would.
 local chef    = Chef()
 local target  = Station()
 local chest2  = Container{ Item("meatballs", { "preparedfood" }, 4), Item("spice_garlic", { "spice" }, 2) }
-local pantry2 = Spice.Scan({ chest2 })
-local job2    = Spice.Choose(target, pantry2, {})
+local pantry2 = Stations.Scan({ chest2 })
+local job2    = Stations.Choose(target, pantry2, {})
 
-Spice.npc = chef
-Spice.Claim(job2)
+Stations.npc = chef
+Stations.Claim(job2)
 
 local node  = { _plan = { cookpot = target, recipe_name = job2.product, cooktime = job2.cooktime } }
 local taken = {}
@@ -385,41 +385,220 @@ check("a Crock Pot plan is not padded", #plain_taken == 1, tostring(#plain_taken
 -- Behaviour._MakePutActionFn is our wrapper by now; the one Attach set aside is
 -- the real thing. Watch that, not the field, or the two call each other.
 local called_through = false
-local real_put = Spice._orig.put
-Spice._orig.put = function(...) called_through = true return real_put(...) end
+local real_put = Stations._orig.put
+Stations._orig.put = function(...) called_through = true return real_put(...) end
 Behaviour._MakePutActionFn(plain_node, plain_taken, plain_node._plan, plain_node)
 check("and its loader is NPC Friends' own", called_through)
-Spice._orig.put = real_put
+Stations._orig.put = real_put
+
+-- ═══════════════════════════════════════════════════════════════════════════
+print("")
+print("=== 4b. drying racks ===")
+
+-- A rack the way DST builds one: no container, one item at a time, and a
+-- component that speaks CanDry/StartDrying/IsDrying rather than a pot's words.
+-- Harvest hands the product to the harvester (dryer.lua:314), and StartDrying
+-- removes the item entity itself (dryer.lua:204).
+local function Rack()
+	local ent
+	local dryer =
+	{
+		product    = nil,
+		ingredient = nil,
+		CanDry     = function(self, item)
+			return self.product == nil and item ~= nil
+				and item.components ~= nil and item.components.dryable ~= nil
+		end,
+		IsDrying = function(self) return self.ingredient ~= nil end,
+		IsDone   = function(self) return self.product ~= nil and self.ingredient == nil end,
+		StartDrying = function(self, item)
+			if not self:CanDry(item) then return false end
+			self.ingredient = item.prefab
+			self.product    = item.components.dryable:GetProduct()
+			item.removed    = true          -- dryable:Remove()
+			return true
+		end,
+		Finish  = function(self) self.ingredient = nil end,
+		Harvest = function(self, harvester)
+			if not self:IsDone() then return false end
+			harvester.components.inventory:GiveItem(Item(self.product, {}))
+			self.product = nil
+			return true
+		end,
+	}
+
+	ent =
+	{
+		prefab  = "meatrack",
+		GUID    = NextGUID(),
+		IsValid = function() return true end,
+		HasTag  = function(_, tag) return tag == "dryer" end,
+		GetPosition = function() return { x = 0, y = 0, z = 0 } end,
+		Transform   = { GetWorldPosition = function() return 0, 0, 0 end },
+		components  = { dryer = dryer },
+	}
+	ent.dryer = dryer
+	return ent
+end
+
+local function Dryable(prefab, product, stack)
+	local item = Item(prefab, {}, stack)
+	item.components.dryable =
+	{
+		GetProduct = function() return product end,
+		GetDryTime = function() return 10 end,
+	}
+	-- Taking one off a stack gives a whole item, components and all, the way
+	-- stackable:Get does in game. Without this the split item would arrive at
+	-- the rack with no dryable component and the rack would refuse it.
+	if item.components.stackable ~= nil then
+		local n = item.components.stackable.n
+		item.components.stackable.Get = function(self, count)
+			self.n = self.n - (count or 1)
+			return Dryable(prefab, product, nil)
+		end
+		item.components.stackable.n = n
+	end
+	return item
+end
+
+Core.Configure({ enabled = true, use_spicer = true, use_dryer = true, same_dish_max = 3 })
+Stations.Reset()
+
+local rack = Rack()
+check("a rack is recognised", Stations.IsDryer(rack))
+check("a Crock Pot is not a rack", not Stations.IsDryer(pot))
+
+local proxy = Stations.Proxy(rack)
+check("the stand-in answers a pot's questions",
+	proxy.components.stewer ~= nil
+	and proxy.components.stewer.IsCooking() == false
+	and proxy.components.stewer.IsDone() == false
+	and proxy.components.stewer.CanCook() == true)
+check("it forwards position and tags", proxy:HasTag("dryer") and proxy.Transform ~= nil)
+check("it is known to be a stand-in", Stations.IsDryProxy(proxy) and Stations.IsSideStation(proxy))
+check("the real rack is never given a stewer", rack.components.stewer == nil)
+check("asking twice gives the same stand-in", Stations.Proxy(rack) == proxy)
+
+-- Finding something to dry.
+local drychest = Container{
+	Dryable("smallmeat", "smallmeat_dried", 4),
+	Item("berries", {}),
+	Item("spice_garlic", { "spice" }),
+}
+local dryables = Stations.ScanDryables({ drychest })
+check("the dryable is found",      dryables.smallmeat ~= nil)
+check("and names its product",     dryables.smallmeat ~= nil and dryables.smallmeat.product == "smallmeat_dried")
+check("a non-dryable is ignored",  dryables.berries == nil)
+
+local dryjob = Stations.ChooseDry(proxy, dryables, {})
+check("a drying job is chosen", dryjob ~= nil and dryjob.kind == "dry"
+	and dryjob.product == "smallmeat_dried", dryjob and dryjob.product or "nil")
+
+check("no job when the larder is full of it",
+	Stations.ChooseDry(proxy, dryables, { smallmeat_dried = 3 }) == nil)
+
+local drycard = Stations.Card(dryjob)
+check("the card asks for one item", #drycard._selected_ingredients == 1)
+check("and names the dried product", drycard.name == "smallmeat_dried")
+
+-- Through their behaviour, four-item gate and all.
+local drychef = Chef()
+local dryplan = { cookpot = proxy, recipe_name = dryjob.product, cooktime = dryjob.cooktime }
+local drynode = { _plan = dryplan }
+local drytaken = {}
+
+Stations.npc = drychef
+Stations.Claim(dryjob)
+
+local drytake = Behaviour._MakeTakeActionFn(drynode, {
+	{ slot = 1, prefab = "smallmeat", take_count = 1 },
+}, drytaken)
+drytake(drychef, drychest)
+
+check("one real item is carried, and the list is padded to four",
+	drytaken[1] == "smallmeat" and #drytaken >= 4, tostring(#drytaken))
+
+local dryput = Behaviour._MakePutActionFn(drynode, drytaken, dryplan, drynode)
+dryput(drychef, proxy)
+
+check("the rack is drying", rack.dryer:IsDrying() == true)
+check("it is drying the right thing", rack.dryer.ingredient == "smallmeat",
+	tostring(rack.dryer.ingredient))
+check("and will produce the right thing", rack.dryer.product == "smallmeat_dried")
+check("the stand-in reports it as cooking", proxy.components.stewer.IsCooking() == true)
+
+-- And the behaviour's own harvest step works through the stand-in.
+rack.dryer:Finish()
+check("the stand-in reports it as done", proxy.components.stewer.IsDone() == true)
+local harvester = Chef()
+proxy.components.stewer:Harvest(harvester)
+local got = nil
+for i = 1, 15 do
+	local it = harvester.components.inventory:GetItemInSlot(i)
+	if it ~= nil then got = it.prefab break end
+end
+check("harvesting gives the chef the dried food", got == "smallmeat_dried", tostring(got))
+
+-- A rack that refuses must hand the food back, not eat it.
+Stations.Reset()
+local fullrack = Rack()
+fullrack.dryer.product = "already_busy"
+local fullproxy = Stations.Proxy(fullrack)
+local chef2 = Chef()
+chef2.components.inventory:GiveItem(Dryable("smallmeat", "smallmeat_dried"))
+Stations.npc = chef2
+Stations.Claim({ kind = "dry", product = "smallmeat_dried", cooktime = 10,
+	item = { prefab = "smallmeat", at = { container = drychest, slot = 1, count = 1 } } })
+local badplan = { cookpot = fullproxy, recipe_name = "smallmeat_dried", cooktime = 10 }
+Behaviour._MakePutActionFn({ _plan = badplan }, { "smallmeat" }, badplan, {})(chef2, fullproxy)
+
+local still_held = false
+for i = 1, 15 do
+	local it = chef2.components.inventory:GetItemInSlot(i)
+	if it ~= nil and it.prefab == "smallmeat" then still_held = true break end
+end
+check("a refused rack gives the food back", still_held)
+check("and it counts as a strike", Stations.strikes == 1, tostring(Stations.strikes))
+
+Core.Configure({ use_dryer = false })
+Stations.Reset()
+Stations.attached = true
+Stations.pending = { kind = "dry" }
+Stations.npc = drychef
+check("turning drying off stops it", Stations.Wanted() == false)
+Core.Configure({ use_dryer = true })
+check("turning it on starts it again", Stations.Wanted() == true)
 
 -- ═══════════════════════════════════════════════════════════════════════════
 print("")
 print("=== 5. it gives up rather than spinning ===")
 
-Spice.Reset()
-Spice.attached = true
-Spice.pending  = job
-Spice.npc      = chef
-check("a job is offered", Spice.Wanted() == true)
+Stations.Reset()
+Stations.attached = true
+Stations.pending  = job
+Stations.npc      = chef
+check("a job is offered", Stations.Wanted() == true)
 
-Spice.last[chef.GUID] = true
-check("but never twice in a row", Spice.Wanted() == false)
+Stations.last[chef.GUID] = true
+check("but never twice in a row", Stations.Wanted() == false)
 
-Spice.last[chef.GUID] = false
-Spice.strikes = 3
-check("and not at all once the station keeps refusing", Spice.Wanted() == false)
+Stations.last[chef.GUID] = false
+Stations.strikes = 3
+check("and not at all once the station keeps refusing", Stations.Wanted() == false)
 
-Spice.strikes = 0
+Stations.strikes = 0
 Core.Configure({ use_spicer = false })
-check("turning it off stops it", Spice.Wanted() == false)
+check("turning it off stops it", Stations.Wanted() == false)
 Core.Configure({ use_spicer = true })
 
-Spice.attached = false
-check("and so does never having attached", Spice.Wanted() == false)
+Stations.attached = false
+check("and so does never having attached", Stations.Wanted() == false)
 
 -- A missing behaviour class must not throw, just decline.
 _G.NPCCookingBehavior = nil
-Spice.attached = false
-check("no behaviour class means no spicing, not a crash", Spice.Attach(planner) == false)
+Stations.attached = false
+check("no behaviour class means no spicing, not a crash", Stations.Attach(planner) == false)
 
 print("")
 if failures == 0 then

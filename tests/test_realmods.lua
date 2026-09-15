@@ -321,11 +321,11 @@ end
 --  Spicing, against DST's own 316 spiced recipes
 -- ═══════════════════════════════════════════════════════════════════════════
 --
--- hofnpc_spice reads a spiced recipe's own basename and spice rather than
+-- hofnpc_stations reads a spiced recipe's own basename and spice rather than
 -- searching for anything. That only works if every spiced recipe really does
 -- carry them, so count them in the live table.
 
-local Spice = require("hofnpc_spice")
+local Stations = require("hofnpc_stations")
 
 do
 	local spicer = cooking.recipes.portablespicer or {}
@@ -381,10 +381,10 @@ do
 		},
 	}
 
-	check("a real seasoning station is recognised", Spice.IsStation(station))
+	check("a real seasoning station is recognised", Stations.IsStation(station))
 
 	Core.Configure({ enabled = true, use_spicer = true, same_dish_max = 3, allow_negative = true })
-	local job = Spice.Choose(station, Spice.Scan({ chest }), {})
+	local job = Stations.Choose(station, Stations.Scan({ chest }), {})
 	check("a job is picked from the real recipe table",
 		job ~= nil and job.product == "meatballs_spice_garlic", job and job.product or "nil")
 
