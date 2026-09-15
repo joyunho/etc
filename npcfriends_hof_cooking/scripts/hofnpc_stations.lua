@@ -89,7 +89,7 @@ local SPICE_SLOTS = 2
 local STRIKE_LIMIT = 3
 
 Stations.attached  = false
-Stations.strikes   = { spice = 0, dry = 0 }
+Stations.strikes   = { spice = 0, dry = 0, brew = 0 }
 Stations._orig     = {}
 
 -- One chef on the surface and one in the caves plan independently, so the job
@@ -106,7 +106,7 @@ Stations.last    = {}   -- [guid] = true when that chef's last job was a spicing
 local PAD = "\1hofnpc_stations_pad"
 
 function Stations.Reset()
-	Stations.strikes = { spice = 0, dry = 0 }
+	Stations.strikes = { spice = 0, dry = 0, brew = 0 }
 	Stations.pending = nil
 	Stations.npc     = nil
 	Stations.jobs    = {}
@@ -323,9 +323,22 @@ function Stations.Card(job)
 		}
 	end
 
-	local items = job.kind == "dry"
-		and { At(job.item) }
-		or  { At(job.dish), At(job.spice) }
+	local items
+
+	if job.kind == "dry" then
+		items = { At(job.item) }
+	elseif job.kind == "brew" then
+		items = {}
+		for _, want in ipairs(job.items) do
+			-- One entry per unit: the pickup route takes them one at a time and
+			-- the four-item gate counts what came back.
+			for _ = 1, want.count do
+				items[#items + 1] = At(want)
+			end
+		end
+	else
+		items = { At(job.dish), At(job.spice) }
+	end
 
 	return
 	{
@@ -348,15 +361,21 @@ function Stations.IsDryer(ent)
 		and ent.components.dryer ~= nil
 end
 
+function Stations.IsBrewer(ent)
+	return ent ~= nil
+		and ent.components ~= nil
+		and ent.components.brewer ~= nil
+		and ent.components.container ~= nil
+end
+
 Stations.proxies = setmetatable({}, { __mode = "k" })
 
--- The stand-in. Only the behaviour ever holds one.
-function Stations.Proxy(rack)
-	local cached = Stations.proxies[rack]
-	if cached ~= nil then
-		return cached
-	end
-
+-- Warly's kegs and jars (Heap of Foods) are a gentler case than a rack: the
+-- `brewer` component already speaks a pot's language -- IsCooking, IsDone,
+-- CanCook, StartCooking, Harvest, and CanCook is container:IsFull() just as a
+-- pot's is. It is only the name that differs, and the tag, so NPC Friends
+-- never finds one. A stand-in fixes both at once.
+local function DryerAdapter(rack)
 	local dryer = rack.components.dryer
 
 	local adapter =
@@ -374,36 +393,84 @@ function Stations.Proxy(rack)
 	}
 
 	-- product is read by the harvest step to name what came out.
-	setmetatable(adapter, { __index = function(_, k)
+	return setmetatable(adapter, { __index = function(_, k)
 		if k == "product" then return dryer.product end
 		return nil
 	end })
+end
+
+local function BrewerAdapter(machine)
+	local brewer = machine.components.brewer
+
+	local adapter =
+	{
+		IsCooking    = function() return brewer:IsCooking() end,
+		IsDone       = function() return brewer:IsDone() end,
+		CanCook      = function() return brewer:CanCook() end,
+		StartCooking = function(_, doer) return brewer:StartCooking(doer) end,
+		Harvest      = function(_, harvester) return brewer:Harvest(harvester) end,
+	}
+
+	return setmetatable(adapter, { __index = function(_, k)
+		if k == "product" then return brewer.product end
+		return nil
+	end })
+end
+
+-- The stand-in. Only the behaviour ever holds one.
+function Stations.Proxy(machine)
+	local cached = Stations.proxies[machine]
+	if cached ~= nil then
+		return cached
+	end
+
+	local kind, adapter
+
+	if Stations.IsDryer(machine) then
+		kind, adapter = "dry", DryerAdapter(machine)
+	elseif Stations.IsBrewer(machine) then
+		kind, adapter = "brew", BrewerAdapter(machine)
+	else
+		return nil
+	end
 
 	local proxy =
 	{
-		prefab  = rack.prefab,
-		GUID    = rack.GUID,
-		Transform = rack.Transform,
-		components = { stewer = adapter },
+		prefab  = machine.prefab,
+		GUID    = machine.GUID,
+		Transform = machine.Transform,
 
-		IsValid     = function() return rack:IsValid() end,
-		GetPosition = function() return rack:GetPosition() end,
-		HasTag      = function(_, tag) return rack:HasTag(tag) end,
+		-- A rack has no container; a keg does, and the behaviour opens and
+		-- closes it around the loading animation.
+		components =
+		{
+			stewer    = adapter,
+			container = machine.components.container,
+		},
 
-		_hofnpc_rack = rack,
+		IsValid     = function() return machine:IsValid() end,
+		GetPosition = function() return machine:GetPosition() end,
+		HasTag      = function(_, tag) return machine:HasTag(tag) end,
+
+		_hofnpc_machine = machine,
+		_hofnpc_kind    = kind,
 	}
 
-	Stations.proxies[rack] = proxy
+	Stations.proxies[machine] = proxy
 	return proxy
 end
 
-function Stations.IsDryProxy(ent)
-	return ent ~= nil and ent._hofnpc_rack ~= nil
+function Stations.ProxyKind(ent)
+	return ent ~= nil and ent._hofnpc_kind or nil
+end
+
+function Stations.IsProxy(ent)
+	return ent ~= nil and ent._hofnpc_machine ~= nil
 end
 
 -- Any machine the chef can only work through this file.
 function Stations.IsSideStation(ent)
-	return Stations.IsDryProxy(ent) or Stations.IsStation(ent)
+	return Stations.IsProxy(ent) or Stations.IsStation(ent)
 end
 
 -- Items in the chests that a rack would take. Dryables are not cooking
@@ -450,9 +517,9 @@ end
 
 -- Racks near the chef, the same way NPC Friends finds its pots: around the
 -- cooking centre the player set, within the radius it uses for farm work.
-local RACK_RADIUS = 17
+local MACHINE_RADIUS = 17
 
-function Stations.Racks(inst)
+function Stations.Machines(inst)
 	local out = {}
 
 	if inst == nil or rawget(_G, "TheSim") == nil then
@@ -471,27 +538,186 @@ function Stations.Racks(inst)
 		return out
 	end
 
+	-- FindEntities' tag list is an OR, so one sweep finds racks and kegs
+	-- together. The component check below is what actually decides.
 	local ok, found = pcall(function()
-		return TheSim:FindEntities(x, 0, z, RACK_RADIUS, { "dryer" })
+		return TheSim:FindEntities(x, 0, z, MACHINE_RADIUS, nil, { "INLIMBO", "burnt" }, { "dryer", "brewer" })
 	end)
 
 	if not ok or type(found) ~= "table" then
-		-- Not every build tags a rack "dryer"; fall back to reading components.
-		ok, found = pcall(function()
-			return TheSim:FindEntities(x, 0, z, RACK_RADIUS, nil, { "INLIMBO", "burnt" })
-		end)
-		if not ok or type(found) ~= "table" then
-			return out
-		end
+		return out
 	end
 
+	local seen = {}
+
 	for _, ent in ipairs(found) do
-		if ent:IsValid() and Stations.IsDryer(ent) then
+		if ent:IsValid() and not seen[ent]
+			and (Stations.IsDryer(ent) or Stations.IsBrewer(ent)) then
+			seen[ent] = true
 			out[#out + 1] = ent
 		end
 	end
 
 	return out
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+--  Kegs and jars
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Heap of Foods brews in a second, parallel cooking system. `hof_brewing` is a
+-- near copy of Klei's `cooking`: brewing.recipes[machine][product], a
+-- brewingredients table of prefab -> tags, an IsBrewingIngredient, and a
+-- CalculateBrewing that ends in math.random() exactly as CalculateRecipe does.
+--
+-- Two things make this the easy one. The recipes state their own ingredients --
+--
+--     wine_berries = { card_def = { ingredients = {{"berries", 2}, {"ice", 1}} } }
+--
+-- so there is nothing to search for; and Brewer:StartCooking reads the module
+-- table through an upvalue (`local brewing = require("hof_brewing")`), so the
+-- product can be forced by swapping one field on that table for the length of
+-- the call -- which is what NPC Friends does to cooking.CalculateRecipe, for
+-- the same reason.
+--
+-- A brew takes days rather than seconds, so a keg the chef fills is a keg that
+-- looks after itself for a long while.
+
+Stations._brewing = nil
+
+-- nil, and cached as nil, when Heap of Foods is not installed.
+function Stations.Brewing()
+	if Stations._brewing ~= nil then
+		return Stations._brewing ~= false and Stations._brewing or nil
+	end
+
+	local ok, mod = pcall(require, "hof_brewing")
+
+	if ok and type(mod) == "table" and type(mod.recipes) == "table" then
+		Stations._brewing = mod
+		return mod
+	end
+
+	Stations._brewing = false
+	return nil
+end
+
+-- Brewing has its own ingredient table, so a keg's ingredients are invisible
+-- both to NPC Friends' scan and to the one hofnpc_search uses.
+function Stations.ScanBrewables(containers)
+	local brewing = Stations.Brewing()
+	if brewing == nil then
+		return {}
+	end
+
+	local found = {}
+
+	for _, container in ipairs(containers or {}) do
+		pcall(function()
+			if not container:IsValid() or container.components == nil
+				or container.components.container == nil then
+				return
+			end
+
+			local cont = container.components.container
+
+			for slot = 1, cont:GetNumSlots() do
+				local item = cont:GetItemInSlot(slot)
+
+				if item ~= nil and item:IsValid()
+					and brewing.brewingredients[item.prefab] ~= nil then
+
+					local at = found[item.prefab]
+					if at == nil then
+						found[item.prefab] =
+						{
+							container = container,
+							slot      = slot,
+							count     = StackSize(item),
+						}
+					else
+						at.count = at.count + StackSize(item)
+					end
+				end
+			end
+		end)
+	end
+
+	return found
+end
+
+function Stations.ChooseBrew(proxy, brewables, existing_dishes)
+	local brewing = Stations.Brewing()
+	if brewing == nil or proxy == nil or brewables == nil then
+		return nil
+	end
+
+	local machine = proxy._hofnpc_machine
+	local recipes = machine ~= nil and brewing.recipes[machine.prefab] or nil
+	if recipes == nil then
+		return nil
+	end
+
+	-- StartCooking only fires when the container is full, so a recipe that does
+	-- not fill it exactly can never be brewed by anyone.
+	local slots = StationSlots(machine)
+	if slots == nil then
+		return nil
+	end
+
+	existing_dishes = existing_dishes or {}
+	local same_max  = Core.SameDishMax()
+
+	local best, best_score = nil, nil
+
+	for product, recipe in pairs(recipes) do
+		local card = recipe.card_def
+
+		if type(card) == "table" and type(card.ingredients) == "table"
+			and (existing_dishes[product] or 0) < same_max
+			and Core.IsDishAllowed(machine.prefab, product) then
+
+			local total, affordable, items = 0, true, {}
+
+			for _, pair in ipairs(card.ingredients) do
+				local prefab, count = pair[1], pair[2] or 1
+				local at = brewables[prefab]
+
+				if type(prefab) ~= "string" or at == nil or (at.count or 0) < count then
+					affordable = false
+					break
+				end
+
+				total = total + count
+				items[#items + 1] = { prefab = prefab, at = at, count = count }
+			end
+
+			if affordable and total == slots then
+				-- Brew the thing we have most spare of, so a rare berry is not
+				-- spent on a keg when it could be dinner.
+				local spare = nil
+				for _, want in ipairs(items) do
+					local left = (want.at.count or 0) - want.count
+					if spare == nil or left < spare then
+						spare = left
+					end
+				end
+
+				if best_score == nil or spare > best_score then
+					best_score = spare
+					best =
+					{
+						kind     = "brew",
+						product  = product,
+						cooktime = recipe.cooktime or 1,
+						items    = items,
+					}
+				end
+			end
+		end
+	end
+
+	return best
 end
 
 function Stations.ChooseDry(rack, dryables, existing_dishes)
@@ -536,12 +762,16 @@ local function PlanKind(plan)
 	if plan == nil then
 		return nil
 	end
-	if Stations.IsDryProxy(plan.cookpot) then
-		return "dry"
+
+	local kind = Stations.ProxyKind(plan.cookpot)
+	if kind ~= nil then
+		return kind
 	end
+
 	if Stations.IsStation(plan.cookpot) then
 		return "spice"
 	end
+
 	return nil
 end
 
@@ -630,7 +860,7 @@ end
 -- (dryer.lua: `dryable:Remove()`), and when it fails the item has to go back in
 -- the bag or it is gone for good.
 local function LoadDryer(npc, proxy, plan)
-	local rack = proxy ~= nil and proxy._hofnpc_rack or nil
+	local rack = proxy ~= nil and proxy._hofnpc_machine or nil
 	if rack == nil or not rack:IsValid() or rack.components.dryer == nil then
 		return false
 	end
@@ -676,6 +906,87 @@ local function LoadDryer(npc, proxy, plan)
 	return false
 end
 
+-- Fill the keg, then start it with the product the plan named. Forcing is the
+-- same trick NPC Friends uses on cooking.CalculateRecipe, applied to brewing's
+-- own: swap the field for the length of the call and put it back, so the
+-- machine's own math.random() never gets a say and never moves the world seed.
+local function LoadBrewer(npc, proxy, plan)
+	local machine = proxy ~= nil and proxy._hofnpc_machine or nil
+	if machine == nil or not machine:IsValid()
+		or machine.components.brewer == nil or machine.components.container == nil then
+		return false
+	end
+
+	local job = Stations.Take(npc)
+	if job == nil or job.kind ~= "brew" then
+		return false
+	end
+
+	local brewing = Stations.Brewing()
+	if brewing == nil then
+		return false
+	end
+
+	local container = machine.components.container
+	local brewer    = machine.components.brewer
+	local inventory = npc.components ~= nil and npc.components.inventory or nil
+
+	if inventory == nil or brewer:IsCooking() or brewer:IsDone() then
+		return false
+	end
+
+	local placed = 0
+
+	for _, want in ipairs(job.items) do
+		for _ = 1, want.count do
+			for slot = 1, (inventory.maxslots or 0) do
+				local item = inventory:GetItemInSlot(slot)
+
+				if item ~= nil and item:IsValid() and item.prefab == want.prefab then
+					local one
+
+					local stackable = item.components ~= nil and item.components.stackable or nil
+					if stackable ~= nil and StackSize(item) > 1 then
+						one = stackable:Get(1)
+					else
+						one = inventory:RemoveItem(item)
+					end
+
+					if one ~= nil then
+						one.prevcontainer = nil
+						one.prevslot      = nil
+						container:GiveItem(one)
+						placed = placed + 1
+					end
+					break
+				end
+			end
+		end
+	end
+
+	if not brewer:CanCook() then
+		Core.Log(string.format("could not fill the keg (%d placed)", placed))
+		return false
+	end
+
+	local original = brewing.CalculateBrewing
+	brewing.CalculateBrewing = function()
+		return plan.recipe_name or job.product, plan.cooktime or job.cooktime or 1
+	end
+
+	local ok, err = pcall(brewer.StartCooking, brewer, npc)
+
+	brewing.CalculateBrewing = original
+
+	if not ok then
+		Core.Err("the keg would not start:", tostring(err))
+		return false
+	end
+
+	Core.Log("brewing:", tostring(plan.recipe_name or job.product))
+	return true
+end
+
 function Stations.Attach(planner)
 	if Stations.attached then
 		return true
@@ -698,10 +1009,13 @@ function Stations.Attach(planner)
 		class._GetCookpots = function(self)
 			local pots = Stations._orig.pots(self) or {}
 
-			if Core.cfg.enabled and Core.cfg.use_dryer then
+			if Core.cfg.enabled and (Core.cfg.use_dryer or Core.cfg.use_brewer) then
 				pcall(function()
-					for _, rack in ipairs(Stations.Racks(self.inst)) do
-						pots[#pots + 1] = Stations.Proxy(rack)
+					for _, machine in ipairs(Stations.Machines(self.inst)) do
+						local proxy = Stations.Proxy(machine)
+						if proxy ~= nil then
+							pots[#pots + 1] = proxy
+						end
 					end
 				end)
 			end
@@ -735,7 +1049,9 @@ function Stations.Attach(planner)
 		local kind = PlanKind(plan)
 
 		return function(npc, station)
-			local load = (kind == "dry") and LoadDryer or LoadStation
+			local load = (kind == "dry") and LoadDryer
+				or (kind == "brew") and LoadBrewer
+				or LoadStation
 			local ok, started = pcall(load, npc, station, plan)
 
 			if not ok then
@@ -789,6 +1105,8 @@ function Stations.Wanted()
 
 	if kind == "dry" then
 		if not Core.cfg.use_dryer then return false end
+	elseif kind == "brew" then
+		if not Core.cfg.use_brewer then return false end
 	elseif not Core.cfg.use_spicer then
 		return false
 	end
@@ -854,10 +1172,22 @@ function Stations.AttachPlanner(planner)
 					end
 				end
 
+				-- A keg next: a brew takes days, so getting one started early is
+				-- worth more than another rack of jerky.
+				if Stations.pending == nil and Core.cfg.use_brewer
+					and (Stations.strikes.brew or 0) < STRIKE_LIMIT then
+					for _, ent in ipairs(cookpots or {}) do
+						if ent ~= nil and ent:IsValid() and Stations.ProxyKind(ent) == "brew" and Idle(ent) then
+							Stations.pending = Stations.ChooseBrew(ent, Stations.ScanBrewables(containers), existing)
+							break
+						end
+					end
+				end
+
 				if Stations.pending == nil and Core.cfg.use_dryer
 					and (Stations.strikes.dry or 0) < STRIKE_LIMIT then
 					for _, ent in ipairs(cookpots or {}) do
-						if ent ~= nil and ent:IsValid() and Stations.IsDryProxy(ent) and Idle(ent) then
+						if ent ~= nil and ent:IsValid() and Stations.ProxyKind(ent) == "dry" and Idle(ent) then
 							Stations.pending = Stations.ChooseDry(ent, Stations.ScanDryables(containers), existing)
 							break
 						end

@@ -89,9 +89,13 @@ local function Item(prefab, tags, stack)
 			{
 				n = stack,
 				StackSize = function(self) return self.n end,
+				-- stackable:Get(n) hands back a stack of n, not a single item.
+				-- The pickup step asks for take_count at once, so a keg recipe
+				-- that wants two berries leaves the chef holding a stack of two.
 				Get = function(self, count)
-					self.n = self.n - (count or 1)
-					return Item(prefab, tags, nil)
+					count = count or 1
+					self.n = self.n - count
+					return Item(prefab, tags, count > 1 and count or nil)
 				end,
 			},
 		} or {},
@@ -476,7 +480,7 @@ check("the stand-in answers a pot's questions",
 	and proxy.components.stewer.IsDone() == false
 	and proxy.components.stewer.CanCook() == true)
 check("it forwards position and tags", proxy:HasTag("dryer") and proxy.Transform ~= nil)
-check("it is known to be a stand-in", Stations.IsDryProxy(proxy) and Stations.IsSideStation(proxy))
+check("it is known to be a stand-in", Stations.IsProxy(proxy) and Stations.IsSideStation(proxy))
 check("the real rack is never given a stewer", rack.components.stewer == nil)
 check("asking twice gives the same stand-in", Stations.Proxy(rack) == proxy)
 
@@ -571,6 +575,199 @@ Stations.npc = drychef
 check("turning drying off stops it", Stations.Wanted() == false)
 Core.Configure({ use_dryer = true })
 check("turning it on starts it again", Stations.Wanted() == true)
+
+-- ═══════════════════════════════════════════════════════════════════════════
+print("")
+print("=== 4c. kegs and jars ===")
+
+-- Heap of Foods' brewing, in its own shape (scripts/hof_brewing.lua): a
+-- recipes table keyed by machine prefab, its own ingredient table, and a
+-- CalculateBrewing that ends in math.random() just as Klei's does. The recipe
+-- below is the real wine_berries, card_def and all.
+local brewing_calls = 0
+local fake_brewing =
+{
+	brewingredients = { berries = { tags = {} }, ice = { tags = { frozen = 1 } },
+	                    honey = { tags = { sweetener = 1 } } },
+	recipes =
+	{
+		kyno_woodenkeg =
+		{
+			wine_berries =
+			{
+				name = "wine_berries", priority = 30, cooktime = 72,
+				health = 10, hunger = 20, sanity = 40,
+				test = function() return false end,
+				card_def = { ingredients = { { "berries", 2 }, { "ice", 1 } } },
+			},
+			-- Never brewable: its card does not fill the three slots.
+			short_one =
+			{
+				name = "short_one", priority = 30, cooktime = 10,
+				health = 1, hunger = 1, sanity = 1,
+				test = function() return false end,
+				card_def = { ingredients = { { "honey", 1 } } },
+			},
+		},
+	},
+}
+fake_brewing.CalculateBrewing = function()
+	brewing_calls = brewing_calls + 1
+	return nil          -- the real one answers at random; ours must never be asked
+end
+package.loaded["hof_brewing"] = fake_brewing
+Stations._brewing = nil
+
+local function Keg()
+	local held = {}
+	local started_by, product = nil, nil
+	local brewer =
+	{
+		IsCooking = function() return started_by ~= nil end,
+		IsDone    = function() return false end,
+		CanCook   = function() return #held >= 3 end,
+		StartCooking = function(self, doer)
+			started_by = doer
+			local names = {}
+			for _, it in ipairs(held) do names[#names + 1] = it.prefab end
+			product = fake_brewing.CalculateBrewing("kyno_woodenkeg", names)
+		end,
+		Harvest = function() return true end,
+	}
+
+	local ent
+	ent =
+	{
+		prefab  = "kyno_woodenkeg",
+		GUID    = NextGUID(),
+		IsValid = function() return true end,
+		HasTag  = function(_, tag) return tag == "brewer" end,
+		GetPosition = function() return { x = 0, y = 0, z = 0 } end,
+		Transform   = { GetWorldPosition = function() return 0, 0, 0 end },
+		components  =
+		{
+			brewer    = brewer,
+			container =
+			{
+				numslots    = 3,
+				GetNumSlots = function() return 3 end,
+				GiveItem    = function(_, item) held[#held + 1] = item return true end,
+				IsFull      = function() return #held >= 3 end,
+				slots       = held,
+			},
+		},
+	}
+	ent.held    = held
+	ent.Product = function() return product end
+	return ent
+end
+
+Core.Configure({ enabled = true, use_spicer = true, use_dryer = true, use_brewer = true,
+	same_dish_max = 3, allow_negative = false })
+Stations.Reset()
+
+local keg = Keg()
+check("a keg is recognised as a brewer", Stations.IsBrewer(keg))
+check("a keg is not a rack",             not Stations.IsDryer(keg))
+
+local kegproxy = Stations.Proxy(keg)
+check("the keg's stand-in is a brew stand-in", Stations.ProxyKind(kegproxy) == "brew")
+check("it forwards the container, which a rack has none of",
+	kegproxy.components.container ~= nil)
+check("the real keg is never given a stewer", keg.components.stewer == nil)
+check("its adapter speaks a pot's words",
+	kegproxy.components.stewer.IsCooking() == false
+	and kegproxy.components.stewer.CanCook() == false)
+
+-- Reading the chests. Brewing ingredients are in neither the cooking pool nor
+-- the dryable list, so they need their own sweep.
+local kegchest = Container{
+	Item("berries", {}, 6),
+	Item("ice", {}, 4),
+	Item("rocks", {}),
+}
+local brewables = Stations.ScanBrewables({ kegchest })
+check("brewing ingredients are found", brewables.berries ~= nil and brewables.ice ~= nil)
+check("a non-ingredient is ignored",   brewables.rocks == nil)
+
+local brewjob = Stations.ChooseBrew(kegproxy, brewables, {})
+check("a brew is chosen from the card", brewjob ~= nil and brewjob.kind == "brew"
+	and brewjob.product == "wine_berries", brewjob and brewjob.product or "nil")
+check("a recipe that would not fill the keg is never chosen",
+	brewjob ~= nil and brewjob.product ~= "short_one")
+
+check("no brew when the larder is full of it",
+	Stations.ChooseBrew(kegproxy, brewables, { wine_berries = 3 }) == nil)
+check("no brew without the ingredients",
+	Stations.ChooseBrew(kegproxy, Stations.ScanBrewables({ Container{ Item("ice", {}, 4) } }), {}) == nil)
+
+local brewcard = Stations.Card(brewjob)
+check("the card asks for one entry per unit", #brewcard._selected_ingredients == 3,
+	tostring(#brewcard._selected_ingredients))
+check("two of them are berries and one is ice",
+	brewcard._selected_ingredients[1].prefab == "berries"
+	and brewcard._selected_ingredients[2].prefab == "berries"
+	and brewcard._selected_ingredients[3].prefab == "ice")
+
+-- Through their behaviour.
+local kegchef = Chef()
+local kegplan = { cookpot = kegproxy, recipe_name = brewjob.product, cooktime = brewjob.cooktime }
+local kegnode = { _plan = kegplan }
+local kegtaken = {}
+
+Stations.npc = kegchef
+Stations.Claim(brewjob)
+
+local kegtake = Behaviour._MakeTakeActionFn(kegnode, {
+	{ slot = 1, prefab = "berries", take_count = 2 },
+	{ slot = 2, prefab = "ice",     take_count = 1 },
+}, kegtaken)
+kegtake(kegchef, kegchest)
+
+check("three real items are carried, padded to four",
+	#kegtaken >= 4 and kegtaken[1] == "berries" and kegtaken[3] == "ice",
+	table.concat(kegtaken, ","))
+
+brewing_calls = 0
+local kegput = Behaviour._MakePutActionFn(kegnode, kegtaken, kegplan, kegnode)
+kegput(kegchef, kegproxy)
+
+check("the keg was filled to its three slots", #keg.held == 3, tostring(#keg.held))
+check("it is brewing", kegproxy.components.stewer.IsCooking() == true)
+check("and it is brewing what the plan named", keg.Product() == "wine_berries",
+	tostring(keg.Product()))
+check("brewing's own random pick was never consulted", brewing_calls == 0,
+	tostring(brewing_calls))
+
+-- The swapped function has to go back, or every keg in the world brews wine.
+check("CalculateBrewing is put back afterwards",
+	fake_brewing.CalculateBrewing ~= nil and select(1, fake_brewing.CalculateBrewing()) == nil)
+
+Core.Configure({ use_brewer = false })
+Stations.Reset()
+Stations.attached = true
+Stations.pending = { kind = "brew" }
+Stations.npc = kegchef
+check("turning brewing off stops it", Stations.Wanted() == false)
+Core.Configure({ use_brewer = true })
+check("turning it on starts it again", Stations.Wanted() == true)
+
+check("a strike against brewing leaves the others alone", (function()
+	Stations.strikes.brew = 3
+	local stopped = Stations.Wanted() == false
+	Stations.pending = { kind = "dry" }
+	local dry_ok = Stations.Wanted() == true
+	Stations.strikes.brew = 0
+	return stopped and dry_ok
+end)())
+
+-- Without Heap of Foods there is no brewing at all, and nothing may blow up.
+package.loaded["hof_brewing"] = nil
+Stations._brewing = nil
+check("no Heap of Foods means no brewing, not a crash", Stations.Brewing() == nil)
+check("and choosing simply finds nothing", Stations.ChooseBrew(kegproxy, {}, {}) == nil)
+package.loaded["hof_brewing"] = fake_brewing
+Stations._brewing = nil
 
 -- ═══════════════════════════════════════════════════════════════════════════
 print("")

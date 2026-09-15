@@ -126,15 +126,17 @@ function Cookware.FindAvailableCookpot(cookpots)
 	local job = Stations.Wanted() and Stations.pending or nil
 
 	if job ~= nil then
-		local want_dryer = job.kind == "dry"
+		local kind = job.kind or "spice"
 
 		for _, pot in ipairs(cookpots or {}) do
-			local right = want_dryer and Stations.IsDryProxy(pot) or Stations.IsStation(pot)
+			local right = (kind == "spice")
+				and Stations.IsStation(pot)
+				or (Stations.ProxyKind(pot) == kind)
 
 			if Usable(pot) and right then
 				local stewer = pot.components.stewer
 				if not stewer:IsCooking() and not stewer:IsDone() then
-					Core.Log(want_dryer and "drying at" or "spicing at", tostring(pot.prefab))
+					Core.Log(kind, "at", tostring(pot.prefab))
 					Stations.Claim(job)
 					return pot
 				end
