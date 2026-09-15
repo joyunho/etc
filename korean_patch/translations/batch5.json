@@ -1,0 +1,60 @@
+{
+  "3461374558": {
+    "_module": {
+      "constants/guide_data": {
+        ".tab_data.basic_guide.hover": "기본 가이드",
+        ".tab_data.perk_abilities.hover": "기술 특전",
+        ".tab_data.perk_attributes.hover": "능력치 특전",
+        ".tab_data.perk_expert.hover": "캐릭터 특전",
+        ".tab_data.perk_global.hover": "월드 특전",
+        ".tab_data.perk_instant.hover": "포인트사용 특전",
+        ".tab_data.perk_produce.hover": "제작 특전",
+        ".tab_data.rog.hover": "거인의 통치 특전 상세"
+      }
+    },
+    "_tuning": {
+      ".CHASNI_CONFIG.ACHIEVEMENT_GUIDE.AQUARIUM": "이글거리는 해복치나 얼음도미를 물컹이 보존 장치에 넣으면 주변 온도가 올라가거나 내려갑니다",
+      ".CHASNI_CONFIG.ACHIEVEMENT_GUIDE.BERNIE": "기본 설정에서는 윌로우로만 달성할 수 있습니다",
+      ".CHASNI_CONFIG.ACHIEVEMENT_GUIDE.BURN": "마그마에 들어가면 즉시 몸에 불이 붙습니다",
+      ".CHASNI_CONFIG.ACHIEVEMENT_GUIDE.CHOPMASTER": "\"전기톱\" 특전을 받으면 더 빨리 달성할 수 있습니다",
+      ".CHASNI_CONFIG.ACHIEVEMENT_GUIDE.COMPLETE": "콘솔에 czcheckach()를 입력하면 달성하지 못한 업적을 확인할 수 있습니다 (서버 전용)",
+      ".CHASNI_CONFIG.ACHIEVEMENT_GUIDE.COOKMASTER": "\"빠른요리\" 특전을 받으면 더 빨리 달성할 수 있습니다",
+      ".CHASNI_CONFIG.ACHIEVEMENT_GUIDE.DANCE": "채팅창에 /dance를 입력하면 춤을 출 수 있습니다",
+      ".CHASNI_CONFIG.ACHIEVEMENT_GUIDE.DIEMETEOR": "운석은 바위 지대 바이옴에서 생성되지만, \"굴착 풍선\"이나 \"카엘 신성한 성경\"으로도 생성할 수 있습니다",
+      ".CHASNI_CONFIG.ACHIEVEMENT_GUIDE.DIEROSE": "월드마다 장미는 정해진 수만 생성되며, 나비를 심어도 장미가 자랄 확률은 1%뿐입니다. 장미를 더 생성하는 가장 확실한 방법은 고대의 연료직공을 처치하는 것입니다",
+      ".CHASNI_CONFIG.ACHIEVEMENT_GUIDE.DODGECHARLIE": "기본 설정에서는 위노나로만 달성할 수 있습니다",
+      ".CHASNI_CONFIG.ACHIEVEMENT_GUIDE.EATCOLD": "차가운 상태일 때 차가운 요리를 먹어야 합니다.\n 차가운 요리 예시 : 과일 모듬, 수박바, 아이스크림, 세비체, 바나나 팝, 아스파라가스파초",
+      ".CHASNI_CONFIG.ACHIEVEMENT_GUIDE.EATFAVOURITE": "캐릭터마다 좋아하는 음식이 다릅니다. 자세한 내용은 위키를 참고하십시오",
+      ".CHASNI_CONFIG.ACHIEVEMENT_GUIDE.EATGEAR": "기본 설정에서는 WX-78로만 달성할 수 있습니다",
+      ".CHASNI_CONFIG.ACHIEVEMENT_GUIDE.EATHOT": "차가운 상태일 때 뜨거운 요리를 먹어야 합니다.\n 몸을 데우는 요리 예시 : 속 채운 고추 파퍼, 용과 파이, 꿀 햄, 케밥, 매운 칠리, 속 채운 가지, 칠면조 정식, 매콤한 용과 칠리 샐러드",
+      ".CHASNI_CONFIG.ACHIEVEMENT_GUIDE.EATKITSCHYIDOL": "기본 설정에서는 우디로만 달성할 수 있습니다",
+      ".CHASNI_CONFIG.ACHIEVEMENT_GUIDE.EATMONSTERLASAGNA": "괴물 라자냐는 보통 체력을 20 감소시키지만, 웨버는 패널티 없이 먹을 수 있습니다",
+      ".CHASNI_CONFIG.ACHIEVEMENT_GUIDE.FEEDWEBBER": "기본 설정에서는 웨버로만 달성할 수 있지만, 다른 플레이어도 거미모자로 달성할 수 있습니다",
+      ".CHASNI_CONFIG.ACHIEVEMENT_GUIDE.FISHMASTER": "\"어부\" 특전을 받으면 더 빨리 달성할 수 있습니다",
+      ".CHASNI_CONFIG.ACHIEVEMENT_GUIDE.FOODWARLY": "기본 설정에서는 왈리로만 달성할 수 있지만, 다른 플레이어도 \"휴대용 그릴\" 아이템 또는 \"요리 전문가\" 특전으로 달성할 수 있습니다",
+      ".CHASNI_CONFIG.ACHIEVEMENT_GUIDE.FRIENDCLOCKWORK": "부서진 태엽장치를 수리해 태엽장치와 친구가 됩니다",
+      ".CHASNI_CONFIG.ACHIEVEMENT_GUIDE.FRIENDMERM": "모든 캐릭터가 달성할 수 있으며, 워트 한 명이 기발한 변장을 건네주기만 하면 됩니다",
+      ".CHASNI_CONFIG.ACHIEVEMENT_GUIDE.FULLMIGHTY": "기본 설정에서는 볼프강으로만 달성할 수 있습니다",
+      ".CHASNI_CONFIG.ACHIEVEMENT_GUIDE.FULLSINGINSP": "기본 설정에서는 위그프리드로만 달성할 수 있습니다",
+      ".CHASNI_CONFIG.ACHIEVEMENT_GUIDE.GIANTPLANT": "\"과잉 비료\" 특전이 있으면 더 쉽게 달성할 수 있습니다",
+      ".CHASNI_CONFIG.ACHIEVEMENT_GUIDE.GLASSMAKER": "개미사자의 모래를 태워 유리가시를 만듭니다",
+      ".CHASNI_CONFIG.ACHIEVEMENT_GUIDE.HEALWORTOX": "모든 캐릭터가 달성할 수 있으며, 워톡스 한 명이 영혼을 떨어뜨리기만 하면 됩니다",
+      ".CHASNI_CONFIG.ACHIEVEMENT_GUIDE.HITSTAGEHAND": "무대 작업대를 86번 망치질해야 합니다.",
+      ".CHASNI_CONFIG.ACHIEVEMENT_GUIDE.ICETRADING": "주머니 저울로 바다 물고기의 무게를 측정합니다",
+      ".CHASNI_CONFIG.ACHIEVEMENT_GUIDE.IRIDESCENTGEMS": "기본 설정에서는 윌슨으로만 달성할 수 있습니다",
+      ".CHASNI_CONFIG.ACHIEVEMENT_GUIDE.KILLHUTCH": "복어 허치에게 마지막 일격을 가할 때 자신의 체력이 10 미만이어야 합니다",
+      ".CHASNI_CONFIG.ACHIEVEMENT_GUIDE.LIGHTNING": "번개를 맞는 가장 쉬운 방법은 '종말이 다가온다!'를 읽는 것입니다",
+      ".CHASNI_CONFIG.ACHIEVEMENT_GUIDE.MINEMASTER": "\"오함마\" 특전을 받으면 더 빨리 달성할 수 있습니다",
+      ".CHASNI_CONFIG.ACHIEVEMENT_GUIDE.MUSICHUTCH": "허치를 빛나게 하는 아이템과 1인 밴드를 함께 허치의 인벤토리에 넣으면 오르골 허치로 변합니다",
+      ".CHASNI_CONFIG.ACHIEVEMENT_GUIDE.PASSTRINKET": "저주받은 장신구를 인벤토리에 지닌 채로 다른 플레이어 옆에서 사망해야 합니다",
+      ".CHASNI_CONFIG.ACHIEVEMENT_GUIDE.PIPSPOOK": "기본 설정에서는 웬디로만 달성할 수 있습니다",
+      ".CHASNI_CONFIG.ACHIEVEMENT_GUIDE.REVIVEWANDA": "모든 캐릭터가 달성할 수 있으며, 완다 한 명이 부활시켜 주기만 하면 됩니다",
+      ".CHASNI_CONFIG.ACHIEVEMENT_GUIDE.RIDERWOBY": "기본 설정에서는 월터로만 달성할 수 있습니다",
+      ".CHASNI_CONFIG.ACHIEVEMENT_GUIDE.SANITYMAXWELL": "기본 설정에서는 맥스웰로만 달성할 수 있습니다",
+      ".CHASNI_CONFIG.ACHIEVEMENT_GUIDE.SITTING": "어떤 의자나 간이 의자에도 앉을 수 있습니다. 가짜 유물 의자도 가능합니다",
+      ".CHASNI_CONFIG.ACHIEVEMENT_GUIDE.SNOWCHESTER": "보름달에 체스터를 파란색 보석으로 가득 채우면 아이스체스터로 변합니다",
+      ".CHASNI_CONFIG.ACHIEVEMENT_GUIDE.WICKERBOOK": "기본 설정에서는 위커바텀으로만 달성할 수 있습니다",
+      ".CHASNI_CONFIG.ACHIEVEMENT_GUIDE.WITHER": "동굴에서는 꽃이 햇빛을 받지 못하면 5~10일 안에 시듭니다"
+    }
+  }
+}

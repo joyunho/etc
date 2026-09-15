@@ -23,6 +23,7 @@ NAMES = {
     "2981932326": "DST Coffee and More",
     "3675508496": "Pond OceanTree",
     "3597024951": "JingXi Furniture",
+    "3461374558": "[AnL] In-game Guide",
 }
 
 # STRINGS paths we accept. Anything else is a bug in the extractor, not a
