@@ -387,6 +387,32 @@ NPC Friends 의 왈리 NPC 가 Heap of Foods 를 비롯한 음식 모드의 요�
   * Heap of Foods 가 없으면 알아서 아무것도 안 합니다.
 
 
+[ 젖 짜게 하기 - use_milker ]
+
+  비팔로 / 코알레펀트 / 번개염소 에게서 젖을 짭니다. 각각 다른 젖이 나오고,
+  봄에는 하나 더, 길들인 비팔로는 둘 더 나옵니다.
+
+  이건 기구가 아닙니다. 담을 통도, 익는 시간도, 나중에 거둘 것도 없습니다.
+  ACTIONS.PULLMILK 은 한 번 부르면 젖이 바로 손에 들어오는 함수입니다
+  (hof_actions.lua:233).
+
+      act.target.components.milkableanimal:Milk(act.doer)
+      if act.invobject.components.finiteuses then finiteuses:Use(1) end
+
+  그래서 그대로 합니다. 양동이도 진짜로 들고 가고 내구도도 실제로 씁니다.
+  요리사가 젖을 공짜로 만들어내지 않습니다. 양동이가 없으면 아무 일도
+  일어나지 않습니다 (테스트 있음).
+
+  * 동물은 걸어다닙니다. 요리사는 "아까 본 자리" 로 출발해서, 도착했을 때
+    없으면 포기합니다. 야생 비팔로는 자주 놓칩니다.
+    묶어 두었거나 길들인 동물이 훨씬 잘 되고, 양도 두 배 가까이 나옵니다.
+
+  * Heap of Foods 의 CanBeMilked() 는 쓸 수 없습니다. self.canbemilked 가
+    아니라 그냥 canbemilked 라는 전역을 읽어서, 살아있는 모든 동물에 대해
+    nil 을 돌려줍니다 (milkableanimal.lua:119). 그래서 Milk() 가 스스로
+    확인하는 조건을 대신 봅니다.
+
+
 [ 왈리가 "재료가 없어요" 라고 할 때 ]
 
   왈리는 창고 전체를 보지 않습니다. '여기서 요리' 로 지정한 지점 기준

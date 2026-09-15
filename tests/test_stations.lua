@@ -771,6 +771,177 @@ Stations._brewing = nil
 
 -- ═══════════════════════════════════════════════════════════════════════════
 print("")
+print("=== 4d. milking ===")
+
+-- A beefalo carrying Heap of Foods' milkable component. Milk() puts the milk
+-- straight in the milker's hands and marks itself spent -- there is no
+-- container, no cooking time and nothing to collect afterwards.
+local function Beefalo(opts)
+	opts = opts or {}
+	local milkable =
+	{
+		canbemilked     = opts.ready ~= false,
+		caninteractwith = opts.tame ~= false,
+		product         = opts.product or "kyno_milk_beefalo",
+		milked_by       = nil,
+		Milk = function(self, milker)
+			if not (self.canbemilked and self.caninteractwith) then return end
+			self.milked_by = milker
+			milker.components.inventory:GiveItem(Item(self.product, {}))
+			self.canbemilked = false
+		end,
+		-- The component's own CanBeMilked reads a global instead of self, so it
+		-- answers nil for every animal alive. Reproduced so the patch is tested
+		-- against the bug it actually has to live with.
+		CanBeMilked = function() return canbemilked end,
+	}
+
+	local frozen = opts.frozen == true
+
+	return
+	{
+		prefab  = "beefalo",
+		GUID    = NextGUID(),
+		IsValid = function() return true end,
+		HasTag  = function(_, tag)
+			if tag == "milkableanimal" then return true end
+			if tag == "is_frozen" then return frozen end
+			return false
+		end,
+		GetPosition = function() return { x = 0, y = 0, z = 0 } end,
+		Transform   = { GetWorldPosition = function() return 0, 0, 0 end },
+		components  = { milkableanimal = milkable },
+		milkable    = milkable,
+	}
+end
+
+local function Bucket(uses)
+	local item = Item("kyno_bucket_empty", { "bucket" })
+	item.components.milker = {}
+	item.spent = 0
+	item.components.finiteuses =
+	{
+		GetUses = function() return uses or 10 end,
+		Use     = function(_, n) item.spent = item.spent + (n or 1) end,
+	}
+	return item
+end
+
+Core.Configure({ enabled = true, use_spicer = true, use_dryer = true,
+	use_brewer = true, use_milker = true, same_dish_max = 3 })
+Stations.Reset()
+
+local cow = Beefalo()
+check("a ready beefalo is milkable",     Stations.IsMilkable(cow))
+check("a spent one is not",              not Stations.IsMilkable(Beefalo{ ready = false }))
+check("an untamed one is not",           not Stations.IsMilkable(Beefalo{ tame = false }))
+check("a frozen one is not",             not Stations.IsMilkable(Beefalo{ frozen = true }))
+check("the broken CanBeMilked is not what we ask", cow.milkable:CanBeMilked() ~= true)
+
+local cowproxy = Stations.Proxy(cow)
+check("an animal gets a milk stand-in",  Stations.ProxyKind(cowproxy) == "milk")
+check("the animal is never given a stewer", cow.components.stewer == nil)
+check("it reports nothing to collect yet", cowproxy.components.stewer.IsDone() == false)
+check("and names what it would give",    cowproxy.components.stewer.product == "kyno_milk_beefalo")
+
+-- Buckets.
+local milkchest = Container{ Bucket(10), Item("berries", {}) }
+local buckets = Stations.ScanBuckets({ milkchest })
+check("a bucket is found",               buckets.kyno_bucket_empty ~= nil)
+check("berries are not a bucket",        buckets.berries == nil)
+
+local worn = Container{ Bucket(0) }
+check("a used-up bucket is not carried", next(Stations.ScanBuckets({ worn })) == nil)
+
+local milkjob = Stations.ChooseMilk(cowproxy, buckets, {})
+check("a milking job is chosen", milkjob ~= nil and milkjob.kind == "milk"
+	and milkjob.product == "kyno_milk_beefalo", milkjob and milkjob.product or "nil")
+check("no job without a bucket",  Stations.ChooseMilk(cowproxy, {}, {}) == nil)
+check("no job when the larder is full of it",
+	Stations.ChooseMilk(cowproxy, buckets, { kyno_milk_beefalo = 3 }) == nil)
+check("no job from a spent animal",
+	Stations.ChooseMilk(Stations.Proxy(Beefalo{ ready = false }), buckets, {}) == nil)
+
+local milkcard = Stations.Card(milkjob)
+check("the card asks for the bucket", #milkcard._selected_ingredients == 1
+	and milkcard._selected_ingredients[1].prefab == "kyno_bucket_empty")
+
+-- Through their behaviour.
+local milkchef = Chef()
+local milkplan = { cookpot = cowproxy, recipe_name = milkjob.product, cooktime = 1 }
+local milknode = { _plan = milkplan }
+local milktaken = {}
+
+Stations.npc = milkchef
+Stations.Claim(milkjob)
+
+Behaviour._MakeTakeActionFn(milknode, {
+	{ slot = 1, prefab = "kyno_bucket_empty", take_count = 1 },
+}, milktaken)(milkchef, milkchest)
+
+check("the bucket is carried, padded to four", #milktaken >= 4
+	and milktaken[1] == "kyno_bucket_empty", tostring(#milktaken))
+
+Behaviour._MakePutActionFn(milknode, milktaken, milkplan, milknode)(milkchef, cowproxy)
+
+local milk_in_hand = nil
+for i = 1, 15 do
+	local it = milkchef.components.inventory:GetItemInSlot(i)
+	if it ~= nil and it.prefab == "kyno_milk_beefalo" then milk_in_hand = it break end
+end
+check("the chef is holding the milk", milk_in_hand ~= nil)
+check("the animal knows who milked it", cow.milkable.milked_by == milkchef)
+check("the beefalo is spent now", cow.milkable.canbemilked == false)
+check("the stand-in now has something to collect", cowproxy.components.stewer.IsDone() == true)
+
+-- The bucket is a real cost, not a formality.
+local used_bucket = nil
+for i = 1, 15 do
+	local it = milkchef.components.inventory:GetItemInSlot(i)
+	if it ~= nil and it.prefab == "kyno_bucket_empty" then used_bucket = it break end
+end
+check("a use of the bucket was spent", used_bucket ~= nil and used_bucket.spent == 1,
+	used_bucket and tostring(used_bucket.spent) or "no bucket")
+
+-- After collecting, the animal must stop looking like it owes milk, or the
+-- behaviour's pre-harvest step walks back to it forever.
+cowproxy.components.stewer:Harvest(milkchef)
+check("collecting clears it", cowproxy.components.stewer.IsDone() == false)
+
+-- No bucket in hand means no milk. This is the one that matters: without it the
+-- chef would be conjuring milk out of nothing.
+Stations.Reset()
+local cow2 = Beefalo()
+local proxy2 = Stations.Proxy(cow2)
+local emptyhanded = Chef()
+Stations.npc = emptyhanded
+Stations.Claim({ kind = "milk", product = "kyno_milk_beefalo", cooktime = 1,
+	bucket = { prefab = "kyno_bucket_empty", at = { container = milkchest, slot = 1, count = 1 } } })
+local plan2 = { cookpot = proxy2, recipe_name = "kyno_milk_beefalo", cooktime = 1 }
+Behaviour._MakePutActionFn({ _plan = plan2 }, { "kyno_bucket_empty" }, plan2, {})(emptyhanded, proxy2)
+
+local conjured = false
+for i = 1, 15 do
+	local it = emptyhanded.components.inventory:GetItemInSlot(i)
+	if it ~= nil then conjured = true break end
+end
+check("no bucket, no milk", not conjured)
+check("and the animal was left alone", cow2.milkable.canbemilked == true)
+check("it counts as a strike against milking only",
+	Stations.strikes.milk == 1 and Stations.strikes.dry == 0,
+	Stations.strikes.milk .. "/" .. Stations.strikes.dry)
+
+Core.Configure({ use_milker = false })
+Stations.Reset()
+Stations.attached = true
+Stations.pending = { kind = "milk" }
+Stations.npc = milkchef
+check("turning milking off stops it", Stations.Wanted() == false)
+Core.Configure({ use_milker = true })
+check("turning it on starts it again", Stations.Wanted() == true)
+
+-- ═══════════════════════════════════════════════════════════════════════════
+print("")
 print("=== 5. it gives up rather than spinning ===")
 
 Stations.Reset()

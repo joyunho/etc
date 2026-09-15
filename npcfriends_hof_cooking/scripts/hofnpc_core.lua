@@ -30,6 +30,7 @@ Core.cfg =
 	use_spicer      = true,     -- also use Warly's Portable Seasoning Station
 	use_dryer       = true,     -- also hang meat and mushrooms on drying racks
 	use_brewer      = true,     -- also fill Heap of Foods' kegs and jars
+	use_milker      = true,     -- also milk beefalo, koalefant and lightning goats
 }
 
 -- Variety weights. The dish the NPC picks is chosen by

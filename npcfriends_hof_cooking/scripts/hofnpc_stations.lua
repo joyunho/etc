@@ -89,7 +89,7 @@ local SPICE_SLOTS = 2
 local STRIKE_LIMIT = 3
 
 Stations.attached  = false
-Stations.strikes   = { spice = 0, dry = 0, brew = 0 }
+Stations.strikes   = { spice = 0, dry = 0, brew = 0, milk = 0 }
 Stations._orig     = {}
 
 -- One chef on the surface and one in the caves plan independently, so the job
@@ -106,7 +106,7 @@ Stations.last    = {}   -- [guid] = true when that chef's last job was a spicing
 local PAD = "\1hofnpc_stations_pad"
 
 function Stations.Reset()
-	Stations.strikes = { spice = 0, dry = 0, brew = 0 }
+	Stations.strikes = { spice = 0, dry = 0, brew = 0, milk = 0 }
 	Stations.pending = nil
 	Stations.npc     = nil
 	Stations.jobs    = {}
@@ -327,6 +327,8 @@ function Stations.Card(job)
 
 	if job.kind == "dry" then
 		items = { At(job.item) }
+	elseif job.kind == "milk" then
+		items = { At(job.bucket) }
 	elseif job.kind == "brew" then
 		items = {}
 		for _, want in ipairs(job.items) do
@@ -359,6 +361,35 @@ function Stations.IsDryer(ent)
 	return ent ~= nil
 		and ent.components ~= nil
 		and ent.components.dryer ~= nil
+end
+
+-- A beefalo, koalefant or lightning goat carrying Heap of Foods' milkable
+-- component, in a state where milking would work.
+--
+-- The component's own CanBeMilked() cannot be used: it reads a bare global
+-- called `canbemilked` rather than self.canbemilked, so it answers nil for
+-- every animal alive (milkableanimal.lua:119). The real gate is the one Milk()
+-- applies to itself a few lines down, so that is the one read here.
+function Stations.IsMilkable(ent)
+	if ent == nil or ent.components == nil or ent.components.milkableanimal == nil then
+		return false
+	end
+
+	if type(ent.IsValid) ~= "function" or not ent:IsValid() then
+		return false
+	end
+
+	-- The action refuses a frozen animal, so we do too.
+	if type(ent.HasTag) == "function"
+		and (ent:HasTag("is_frozen") or ent:HasTag("is_thawing")) then
+		return false
+	end
+
+	local milkable = ent.components.milkableanimal
+
+	return milkable.canbemilked == true
+		and milkable.caninteractwith == true
+		and milkable.product ~= nil
 end
 
 function Stations.IsBrewer(ent)
@@ -417,6 +448,37 @@ local function BrewerAdapter(machine)
 	end })
 end
 
+-- An animal is not a machine at all: milking is one call and the milk lands in
+-- the chef's hands immediately, where a pot has a container, a cooking time and
+-- something to collect afterwards. So this adapter keeps the one bit of state
+-- the behaviour's phases need -- did we just milk it -- and answers from that.
+-- Harvest clears it, which is also what stops the behaviour's pre-harvest step
+-- walking back to an animal it has nothing to collect from.
+local function MilkAdapter(animal, proxy)
+	local adapter =
+	{
+		IsCooking = function() return proxy._hofnpc_milked == true end,
+		IsDone    = function() return proxy._hofnpc_milked == true end,
+		CanCook   = function() return Stations.IsMilkable(animal) end,
+
+		-- The milking already happened in the loading step.
+		StartCooking = function() return true end,
+
+		Harvest = function()
+			proxy._hofnpc_milked = false
+			return true
+		end,
+	}
+
+	return setmetatable(adapter, { __index = function(_, k)
+		if k == "product" then
+			local milkable = animal.components ~= nil and animal.components.milkableanimal or nil
+			return milkable ~= nil and milkable.product or nil
+		end
+		return nil
+	end })
+end
+
 -- The stand-in. Only the behaviour ever holds one.
 function Stations.Proxy(machine)
 	local cached = Stations.proxies[machine]
@@ -425,16 +487,19 @@ function Stations.Proxy(machine)
 	end
 
 	local kind, adapter
+	local proxy = {}
 
 	if Stations.IsDryer(machine) then
 		kind, adapter = "dry", DryerAdapter(machine)
 	elseif Stations.IsBrewer(machine) then
 		kind, adapter = "brew", BrewerAdapter(machine)
+	elseif machine.components ~= nil and machine.components.milkableanimal ~= nil then
+		kind, adapter = "milk", MilkAdapter(machine, proxy)
 	else
 		return nil
 	end
 
-	local proxy =
+	local built =
 	{
 		prefab  = machine.prefab,
 		GUID    = machine.GUID,
@@ -455,6 +520,10 @@ function Stations.Proxy(machine)
 		_hofnpc_machine = machine,
 		_hofnpc_kind    = kind,
 	}
+
+	for k, v in pairs(built) do
+		proxy[k] = v
+	end
 
 	Stations.proxies[machine] = proxy
 	return proxy
@@ -541,7 +610,8 @@ function Stations.Machines(inst)
 	-- FindEntities' tag list is an OR, so one sweep finds racks and kegs
 	-- together. The component check below is what actually decides.
 	local ok, found = pcall(function()
-		return TheSim:FindEntities(x, 0, z, MACHINE_RADIUS, nil, { "INLIMBO", "burnt" }, { "dryer", "brewer" })
+		return TheSim:FindEntities(x, 0, z, MACHINE_RADIUS, nil,
+			{ "INLIMBO", "burnt" }, { "dryer", "brewer", "milkableanimal" })
 	end)
 
 	if not ok or type(found) ~= "table" then
@@ -552,7 +622,7 @@ function Stations.Machines(inst)
 
 	for _, ent in ipairs(found) do
 		if ent:IsValid() and not seen[ent]
-			and (Stations.IsDryer(ent) or Stations.IsBrewer(ent)) then
+			and (Stations.IsDryer(ent) or Stations.IsBrewer(ent) or Stations.IsMilkable(ent)) then
 			seen[ent] = true
 			out[#out + 1] = ent
 		end
@@ -718,6 +788,121 @@ function Stations.ChooseBrew(proxy, brewables, existing_dishes)
 	end
 
 	return best
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+--  Milking
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- This one is not a machine. There is no container, no cooking time and
+-- nothing to collect afterwards -- ACTIONS.PULLMILK is a single call that puts
+-- the milk straight in the chef's hands (hof_actions.lua:233):
+--
+--     act.target.components.milkableanimal:Milk(act.doer)
+--     if act.invobject.components.finiteuses then finiteuses:Use(1) end
+--
+-- so the loading step does exactly that, bucket and all. The chef is not given
+-- free milk: it carries a real bucket from a chest and spends a use of it, the
+-- same as a player would.
+--
+-- The catch is that an animal walks away. The behaviour sets off for where it
+-- was standing and gives up if it is not there when it arrives, so a wild
+-- beefalo wandering its herd will be missed more often than not. A tied or
+-- domesticated one stands still, and is worth more anyway: Milk() hands out
+-- two extra milk for a domesticated animal, and one extra in spring.
+
+local function HasTag(ent, tag)
+	if type(ent.HasTag) ~= "function" then
+		return false
+	end
+	local ok, has = pcall(ent.HasTag, ent, tag)
+	return ok and has == true
+end
+
+-- Buckets in the chests. Same test the action uses: a "bucket" tag on
+-- something carrying the milker component.
+function Stations.ScanBuckets(containers)
+	local found = {}
+
+	for _, container in ipairs(containers or {}) do
+		pcall(function()
+			if not container:IsValid() or container.components == nil
+				or container.components.container == nil then
+				return
+			end
+
+			local cont = container.components.container
+
+			for slot = 1, cont:GetNumSlots() do
+				local item = cont:GetItemInSlot(slot)
+
+				if item ~= nil and item:IsValid() and HasTag(item, "bucket")
+					and item.components ~= nil and item.components.milker ~= nil
+					and found[item.prefab] == nil then
+
+					-- A bucket with no uses left would be carried for nothing.
+					local uses = item.components.finiteuses
+					local left = uses == nil or (type(uses.GetUses) ~= "function")
+						or (select(2, pcall(uses.GetUses, uses)) or 1) > 0
+
+					if left then
+						found[item.prefab] =
+						{
+							container = container,
+							slot      = slot,
+							count     = StackSize(item),
+						}
+					end
+				end
+			end
+		end)
+	end
+
+	return found
+end
+
+function Stations.ChooseMilk(proxy, buckets, existing_dishes)
+	if proxy == nil or buckets == nil then
+		return nil
+	end
+
+	local animal = proxy._hofnpc_machine
+	if not Stations.IsMilkable(animal) then
+		return nil
+	end
+
+	local product = animal.components.milkableanimal.product
+	existing_dishes = existing_dishes or {}
+
+	if (existing_dishes[product] or 0) >= Core.SameDishMax() then
+		return nil
+	end
+
+	if not Core.IsDishAllowed("milk", product) then
+		return nil
+	end
+
+	-- Any bucket will do; take the one there are most of.
+	local best, best_count = nil, nil
+
+	for prefab, at in pairs(buckets) do
+		if best_count == nil or (at.count or 1) > best_count then
+			best_count = at.count or 1
+			best = { prefab = prefab, at = at }
+		end
+	end
+
+	if best == nil then
+		return nil
+	end
+
+	return
+	{
+		kind     = "milk",
+		product  = product,
+		cooktime = 1,
+		bucket   = best,
+	}
 end
 
 function Stations.ChooseDry(rack, dryables, existing_dishes)
@@ -987,6 +1172,60 @@ local function LoadBrewer(npc, proxy, plan)
 	return true
 end
 
+-- ACTIONS.PULLMILK, done by hand: milk the animal, spend a use of the bucket.
+-- The chef keeps the bucket; the store step puts it back with the milk.
+local function LoadMilker(npc, proxy, plan)
+	local animal = proxy ~= nil and proxy._hofnpc_machine or nil
+
+	if not Stations.IsMilkable(animal) then
+		return false
+	end
+
+	local job = Stations.Take(npc)
+	if job == nil or job.kind ~= "milk" then
+		return false
+	end
+
+	local inventory = npc.components ~= nil and npc.components.inventory or nil
+	if inventory == nil then
+		return false
+	end
+
+	-- The action needs a bucket in hand. Without one this would be free milk.
+	local bucket = nil
+	for slot = 1, (inventory.maxslots or 0) do
+		local item = inventory:GetItemInSlot(slot)
+		if item ~= nil and item:IsValid() and item.prefab == job.bucket.prefab then
+			bucket = item
+			break
+		end
+	end
+
+	if bucket == nil then
+		Core.Log("no bucket in hand -- not milking")
+		return false
+	end
+
+	local ok, err = pcall(function()
+		animal.components.milkableanimal:Milk(npc)
+	end)
+
+	if not ok then
+		Core.Err("milking failed:", tostring(err))
+		return false
+	end
+
+	local uses = bucket.components ~= nil and bucket.components.finiteuses or nil
+	if uses ~= nil and type(uses.Use) == "function" then
+		pcall(uses.Use, uses, 1)
+	end
+
+	proxy._hofnpc_milked = true
+
+	Core.Log("milked:", tostring(animal.prefab), "->", tostring(job.product))
+	return true
+end
+
 function Stations.Attach(planner)
 	if Stations.attached then
 		return true
@@ -1009,7 +1248,8 @@ function Stations.Attach(planner)
 		class._GetCookpots = function(self)
 			local pots = Stations._orig.pots(self) or {}
 
-			if Core.cfg.enabled and (Core.cfg.use_dryer or Core.cfg.use_brewer) then
+			if Core.cfg.enabled
+				and (Core.cfg.use_dryer or Core.cfg.use_brewer or Core.cfg.use_milker) then
 				pcall(function()
 					for _, machine in ipairs(Stations.Machines(self.inst)) do
 						local proxy = Stations.Proxy(machine)
@@ -1051,6 +1291,7 @@ function Stations.Attach(planner)
 		return function(npc, station)
 			local load = (kind == "dry") and LoadDryer
 				or (kind == "brew") and LoadBrewer
+				or (kind == "milk") and LoadMilker
 				or LoadStation
 			local ok, started = pcall(load, npc, station, plan)
 
@@ -1107,6 +1348,8 @@ function Stations.Wanted()
 		if not Core.cfg.use_dryer then return false end
 	elseif kind == "brew" then
 		if not Core.cfg.use_brewer then return false end
+	elseif kind == "milk" then
+		if not Core.cfg.use_milker then return false end
 	elseif not Core.cfg.use_spicer then
 		return false
 	end
@@ -1180,6 +1423,24 @@ function Stations.AttachPlanner(planner)
 						if ent ~= nil and ent:IsValid() and Stations.ProxyKind(ent) == "brew" and Idle(ent) then
 							Stations.pending = Stations.ChooseBrew(ent, Stations.ScanBrewables(containers), existing)
 							break
+						end
+					end
+				end
+
+				-- Then an animal, while it is standing where we last saw it.
+				if Stations.pending == nil and Core.cfg.use_milker
+					and (Stations.strikes.milk or 0) < STRIKE_LIMIT then
+					local buckets = nil
+					for _, ent in ipairs(cookpots or {}) do
+						if ent ~= nil and Stations.ProxyKind(ent) == "milk" and Idle(ent) then
+							buckets = buckets or Stations.ScanBuckets(containers)
+							if next(buckets) == nil then
+								break
+							end
+							Stations.pending = Stations.ChooseMilk(ent, buckets, existing)
+							if Stations.pending ~= nil then
+								break
+							end
 						end
 					end
 				end
