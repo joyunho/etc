@@ -44,6 +44,8 @@ local function NewEnv()
 		tostring = tostring, pairs = pairs, ipairs = ipairs,
 		table = table, string = string, math = math,
 		STRINGS = STRINGS,
+		-- Some mods keep their display text in TUNING rather than STRINGS.
+		TUNING = {},
 		KnownModIndex = {
 			IsModEnabled      = function(self, name) return enabled_mods[name] == true end,
 			IsModForceEnabled = function(self, name) return false end,
@@ -52,6 +54,7 @@ local function NewEnv()
 end
 
 local post_inits = {}
+local fake_modules = {}
 
 local function LoadPatch(GLOBAL)
 	post_inits = {}
@@ -60,6 +63,13 @@ local function LoadPatch(GLOBAL)
 	local env = setmetatable({
 		GLOBAL = GLOBAL,
 		AddSimPostInit = function(fn) table.insert(post_inits, fn) end,
+		-- require() is in the real mod sandbox (see tests/test_korean_env.lua);
+		-- here it answers for the stand-in modules a test sets up.
+		require = function(name)
+			local mod = fake_modules[name]
+			if mod == nil then error("module '" .. tostring(name) .. "' not found") end
+			return mod
+		end,
 	}, { __index = _G })
 	setfenv(chunk, env)
 	local ok, e = pcall(chunk)
@@ -214,6 +224,71 @@ G9.STRINGS.ACTIONS.PICK = 42
 local ok9 = LoadPatch(G9)
 check("a parent of an unexpected type is loaded past", ok9)
 check("and left exactly as it was", G9.STRINGS.ACTIONS.PICK == 42, tostring(G9.STRINGS.ACTIONS.PICK))
+
+print("\n=========== 8b. tables we do not own are changed, never created ===========")
+
+-- STRINGS is the game's, so Set builds whatever is missing. TUNING and another
+-- mod's lua module are not: if the mod is absent, or an update moved its text,
+-- the right answer is to do nothing rather than leave a Korean string sitting
+-- in a table nobody reads.
+do
+	local G = NewEnv()
+	enabled_mods = {}
+	fake_modules = {}
+
+	-- Nothing installed: the file must still load, and must not invent tables.
+	local ok = LoadPatch(G)
+	check("it loads with no TUNING content and no modules", ok == true)
+	check("TUNING was not filled in", next(G.TUNING) == nil)
+
+	-- Now with a mod whose text really is in TUNING, shaped as [AnL] In-game
+	-- Guide shapes it, plus the module its tab labels live in.
+	local G2 = NewEnv()
+	G2.TUNING.CHASNI_CONFIG = { ACHIEVEMENT_GUIDE = { BURN = "Running into magma will instantly burn you" } }
+	fake_modules["constants/guide_data"] = {
+		tab_data = { basic_guide = { name = "basic_guide", pages = 12, hover = "Basic Guide" } },
+	}
+	enabled_mods["workshop-3461374558"] = true
+	LoadPatch(G2)
+
+	local guide = G2.TUNING.CHASNI_CONFIG.ACHIEVEMENT_GUIDE
+	local shipped_guide = type(guide.BURN) == "string" and guide.BURN:find("[가-힣]") ~= nil
+
+	if shipped_guide then
+		check("a TUNING string is replaced with Korean", shipped_guide)
+		check("a module's label is replaced with Korean",
+			fake_modules["constants/guide_data"].tab_data.basic_guide.hover:find("[가-힣]") ~= nil)
+		check("the module's other fields are untouched",
+			fake_modules["constants/guide_data"].tab_data.basic_guide.pages == 12)
+	else
+		print("  --    no TUNING translations shipped yet; checking the guards only")
+	end
+
+	-- A key that is not already a string must be left alone: that is what tells
+	-- us the mod is absent or has changed shape.
+	local G3 = NewEnv()
+	G3.TUNING.CHASNI_CONFIG = { ACHIEVEMENT_GUIDE = { BURN = { moved = true } } }
+	enabled_mods["workshop-3461374558"] = true
+	fake_modules = {}
+	LoadPatch(G3)
+	check("a key that is no longer a string is not overwritten",
+		type(G3.TUNING.CHASNI_CONFIG.ACHIEVEMENT_GUIDE.BURN) == "table")
+
+	-- And a missing parent is never conjured.
+	local G4 = NewEnv()
+	enabled_mods["workshop-3461374558"] = true
+	LoadPatch(G4)
+	check("a missing TUNING branch is not created", G4.TUNING.CHASNI_CONFIG == nil)
+
+	-- A module that will not load must not stop anything.
+	local G5 = NewEnv()
+	fake_modules = {}
+	enabled_mods["workshop-3461374558"] = true
+	check("an absent module is survived, not thrown", LoadPatch(G5) == true)
+
+	enabled_mods = {}
+	fake_modules = {}
+end
 
 print("\n=========== 9. it can never stop the game ===========")
 

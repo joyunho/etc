@@ -65,6 +65,42 @@ local function Translate()
 		node[select(n, ...)] = value
 	end
 
+	-- 남의 표를 고칠 때 씁니다.
+	--
+	-- Set 과 다르게 표를 만들지 않고 없는 칸을 새로 만들지도 않습니다.
+	-- 이미 문자열이 들어 있는 자리만 바꿉니다. 그 모드가 안 깔려 있거나,
+	-- 업데이트로 모양이 바뀌었으면 아무 일도 일어나지 않습니다.
+	-- 우리 것이 아닌 표에는 그게 맞는 답입니다.
+	local function Replace(root, value, ...)
+		if type(root) ~= "table" then
+			return
+		end
+
+		local node = root
+		local n = select("#", ...)
+
+		for i = 1, n - 1 do
+			node = node[select(i, ...)]
+			if type(node) ~= "table" then
+				return
+			end
+		end
+
+		local key = select(n, ...)
+		if type(node[key]) == "string" then
+			node[key] = value
+		end
+	end
+
+	-- 다른 모드의 lua 모듈을 가져옵니다. 없으면 nil 입니다.
+	local function Module(name)
+		local ok, mod = pcall(require, name)
+		if ok and type(mod) == "table" then
+			return mod
+		end
+		return nil
+	end
+
 
 	-- JingXi Furniture  (workshop-3597024951)  937개
 	pcall(function() if Apply("3597024951") then

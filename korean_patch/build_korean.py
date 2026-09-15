@@ -29,6 +29,25 @@ NAMES = {
 # translation, and must not reach the game.
 PATH_OK = re.compile(r'^(\.[A-Za-z_]\w*)+$')
 
+# A lua module name another mod requires, e.g. "constants/guide_data".
+MODULE_OK = re.compile(r'^[A-Za-z_][\w/]*$')
+
+# Sections a mod's entry may carry besides its plain STRINGS paths.
+#
+#   _tuning   paths under GLOBAL.TUNING rather than GLOBAL.STRINGS. Some mods
+#             keep their display text there -- [AnL] In-game Guide puts its
+#             achievement hints in TUNING.CHASNI_CONFIG.ACHIEVEMENT_GUIDE and
+#             Achievement & Level reads them back out to show them.
+#
+#   _module   a table returned by another mod's lua module, reached with
+#             require(). The guide's tab labels live in the table
+#             constants/guide_data returns, not in STRINGS at all.
+#
+# Both are written with Replace, never Set: a key that is not already a string
+# is left alone, so a mod that is not installed, or that changed shape in an
+# update, costs nothing.
+SECTIONS = ("_tuning", "_module")
+
 
 def lua_quote(s: str) -> str:
     """Quote a Korean string as a Lua literal.
@@ -52,24 +71,57 @@ def lua_call(path: str, value: str) -> str:
     return f"Set({lua_quote(value)}, {parts})"
 
 
+def lua_replace(root: str, path: str, value: str) -> str:
+    """.CHASNI_CONFIG.X -> Replace(GLOBAL.TUNING, "한국어", "CHASNI_CONFIG", "X")"""
+    parts = ", ".join(f'"{p}"' for p in path.lstrip(".").split("."))
+    return f"Replace({root}, {lua_quote(value)}, {parts})"
+
+
 def main() -> None:
     merged: dict[str, dict[str, str]] = {}
     for f in sorted(TRANS.glob("*.json")):
         for mid, entries in json.loads(f.read_text(encoding="utf-8")).items():
             merged.setdefault(mid, {}).update(entries)
 
+    def count(entries: dict) -> int:
+        n = sum(1 for k in entries if k not in SECTIONS)
+        n += len(entries.get("_tuning", {}))
+        for paths in entries.get("_module", {}).values():
+            n += len(paths)
+        return n
+
     body: list[str] = []
     total = 0
-    for mid in sorted(merged, key=lambda m: -len(merged[m])):
+    for mid in sorted(merged, key=lambda m: -count(merged[m])):
         entries = merged[mid]
         body.append("")
-        body.append(f"-- {NAMES.get(mid, mid)}  (workshop-{mid})  {len(entries)}개")
+        body.append(f"-- {NAMES.get(mid, mid)}  (workshop-{mid})  {count(entries)}개")
         body.append(f'pcall(function() if Apply("{mid}") then')
-        for path in sorted(entries):
+
+        for path in sorted(k for k in entries if k not in SECTIONS):
             if not PATH_OK.match(path):
                 raise SystemExit(f"거부: 이상한 경로 {mid} {path}")
             body.append("\t" + lua_call(path, entries[path]))
             total += 1
+
+        for path in sorted(entries.get("_tuning", {})):
+            if not PATH_OK.match(path):
+                raise SystemExit(f"거부: 이상한 TUNING 경로 {mid} {path}")
+            body.append("\t" + lua_replace("GLOBAL.TUNING", path, entries["_tuning"][path]))
+            total += 1
+
+        for module in sorted(entries.get("_module", {})):
+            if not MODULE_OK.match(module):
+                raise SystemExit(f"거부: 이상한 모듈 이름 {mid} {module}")
+            paths = entries["_module"][module]
+            var = "_m" + str(abs(hash(module)) % 10000)
+            body.append(f'\tlocal {var} = Module("{module}")')
+            for path in sorted(paths):
+                if not PATH_OK.match(path):
+                    raise SystemExit(f"거부: 이상한 모듈 경로 {mid} {module} {path}")
+                body.append("\t" + lua_replace(var, path, paths[path]))
+                total += 1
+
         body.append("end end)")
 
     header = f"""-- modmain.lua  --  자동 생성 파일. 직접 고치지 마세요.
@@ -137,6 +189,42 @@ local function Translate()
 		end
 
 		node[select(n, ...)] = value
+	end
+
+	-- 남의 표를 고칠 때 씁니다.
+	--
+	-- Set 과 다르게 표를 만들지 않고 없는 칸을 새로 만들지도 않습니다.
+	-- 이미 문자열이 들어 있는 자리만 바꿉니다. 그 모드가 안 깔려 있거나,
+	-- 업데이트로 모양이 바뀌었으면 아무 일도 일어나지 않습니다.
+	-- 우리 것이 아닌 표에는 그게 맞는 답입니다.
+	local function Replace(root, value, ...)
+		if type(root) ~= "table" then
+			return
+		end
+
+		local node = root
+		local n = select("#", ...)
+
+		for i = 1, n - 1 do
+			node = node[select(i, ...)]
+			if type(node) ~= "table" then
+				return
+			end
+		end
+
+		local key = select(n, ...)
+		if type(node[key]) == "string" then
+			node[key] = value
+		end
+	end
+
+	-- 다른 모드의 lua 모듈을 가져옵니다. 없으면 nil 입니다.
+	local function Module(name)
+		local ok, mod = pcall(require, name)
+		if ok and type(mod) == "table" then
+			return mod
+		end
+		return nil
 	end
 
 """
