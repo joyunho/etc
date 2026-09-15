@@ -39,15 +39,33 @@ Core.VARIETY_PRESETS =
 	high   = { repeat_penalty = 28, recency_penalty = 60, novelty_bonus = 45, jitter = 16 },
 }
 
--- Search budgets. max_evals bounds how many CalculateRecipe() probes a single
--- planning pass may run, so a pantry full of Heap of Foods ingredients can
--- never stall the server. refresh_evals is the cheaper top-up used when the
--- candidate cache is already warm.
+-- Search budgets. max_evals bounds how many combinations a single planning
+-- pass may try, so a pantry full of Heap of Foods ingredients can never stall
+-- the server. refresh_evals is the cheaper top-up used when the candidate
+-- cache is already warm.
+--
+-- These numbers are lower than they were before the recipe-directed pass
+-- existed, and the search still finds more: asking a dish what it needs costs
+-- a few dozen combinations, guessing at it costs thousands. Measured against
+-- a 30-type pantry with three food mods installed, the medium preset went from
+-- 14 mod dishes found for 22 ms of first-pass work to 31 found for 12 ms.
+-- targeted_evals and targeted_dishes bound the recipe-directed pass (path 3),
+-- which is the one that finds a food mod's dishes. Both are spent only on
+-- dishes nobody has worked out yet, and the cursor carries over between
+-- passes, so a cold pantry is covered across a handful of passes rather than
+-- in one long tick, and a warm one spends almost none of it.
+--
+-- targeted_dishes is the one that keeps the cost flat: without it a pass over
+-- a 250-dish cookbook costs four times what the same pass costs over a 70-dish
+-- one, because cheap dishes are solved in a few combinations each and the eval
+-- budget stretches across dozens of them -- each still paying to read its
+-- requirements. Capping the dishes per pass makes a pass cost the same whether
+-- the player has one food mod installed or six.
 Core.BUDGET_PRESETS =
 {
-	low    = { max_types = 10, max_evals = 400,  refresh_evals = 120, max_candidates = 24 },
-	medium = { max_types = 13, max_evals = 900,  refresh_evals = 250, max_candidates = 40 },
-	high   = { max_types = 16, max_evals = 2000, refresh_evals = 500, max_candidates = 64 },
+	low    = { max_types = 10, max_evals = 100, refresh_evals = 60, max_candidates = 24, targeted_evals = 600,  targeted_dishes = 12 },
+	medium = { max_types = 13, max_evals = 150, refresh_evals = 100, max_candidates = 40, targeted_evals = 1200, targeted_dishes = 24 },
+	high   = { max_types = 16, max_evals = 250, refresh_evals = 160, max_candidates = 64, targeted_evals = 2400, targeted_dishes = 40 },
 }
 
 function Core.Configure(cfg)

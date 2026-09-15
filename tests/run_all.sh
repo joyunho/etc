@@ -91,6 +91,20 @@ else
 	bad "tests/test_korean_env.lua"
 fi
 
+step "Real food mods (DST's own cooking.lua + the player's mods)"
+# Measured against the article, not a fixture: the game's real recipe tables
+# with three real food mods loaded on top. Skips itself when the game or the
+# mods are not on this machine.
+DSTSCRIPTS=${DSTSCRIPTS:-/tmp/claude-0/-home-user-etc/535ff019-a8c4-5c97-985d-74a2ab67890d/scratchpad/dst/scripts}
+DSTWORKSHOP=${DSTWORKSHOP:-/tmp/claude-0/-home-user-etc/535ff019-a8c4-5c97-985d-74a2ab67890d/scratchpad/steamcmd/ws/steamapps/workshop/content/322330}
+if out=$("$LUA" tests/test_realmods.lua "$DSTSCRIPTS" "$DSTWORKSHOP" 2>&1); then
+	printf '%s\n' "$out" | grep -E '^  (--|SKIP)' || true
+	ok "tests/test_realmods.lua"
+else
+	printf '%s\n' "$out"
+	bad "tests/test_realmods.lua"
+fi
+
 step "Bisect tests (simulated server)"
 if ! command -v "$PWSH" >/dev/null 2>&1; then
 	printf '   \033[33mSKIP\033[0m pwsh not installed\n'

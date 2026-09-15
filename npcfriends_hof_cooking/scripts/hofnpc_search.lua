@@ -65,8 +65,22 @@ local PREFAB_ALIASES =
 -- would ever run warm.
 Search._cache = {}
 
+-- What each recipe asks about, read out of its own test function once and kept
+-- for the life of the server. Keyed cooker .. "/" .. product.
+Search._interests = {}
+
+-- tag -> { prefab, ... }, built from cooking.ingredients the first time it is
+-- needed. Mods are all loaded by then and nothing adds ingredients later.
+Search._providers = nil
+
 function Search.ResetCache()
 	Search._cache = {}
+end
+
+function Search.ResetInterests()
+	Search._interests = {}
+	Search._providers = nil
+	Search.ResetRanked()
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -124,6 +138,82 @@ local function TopCandidates(cooker_name, names)
 	end
 
 	return winners
+end
+
+-- Recipes of one cooker, highest priority first, so a confirmation can stop
+-- caring about the ones that could not outrank what it is confirming.
+local _ranked = {}
+
+local function Ranked(cooker_name)
+	local cached = _ranked[cooker_name]
+	if cached ~= nil then
+		return cached
+	end
+
+	local recipes = cooking.recipes[cooker_name]
+	if recipes == nil then
+		return nil
+	end
+
+	local list = {}
+	for name, recipe in pairs(recipes) do
+		if type(recipe.test) == "function" then
+			list[#list + 1] = { name = name, priority = recipe.priority or 0 }
+		end
+	end
+
+	table.sort(list, function(a, b)
+		if a.priority ~= b.priority then
+			return a.priority > b.priority
+		end
+		return a.name < b.name
+	end)
+
+	_ranked[cooker_name] = list
+	return list
+end
+
+function Search.ResetRanked()
+	_ranked = {}
+end
+
+-- TopCandidates narrowed to the recipes that can decide the outcome for a dish
+-- of this priority. A recipe below it cannot win the tier and cannot join it,
+-- so testing it would change nothing -- and skipping it is the difference
+-- between 250 test calls per confirmation and a handful. Returns the winners
+-- and how many tests it took, so the caller can pay for them.
+local function ConfirmAtLeast(cooker_name, names, min_priority)
+	local ranked = Ranked(cooker_name)
+	if ranked == nil then
+		return nil, 0
+	end
+
+	local recipes = cooking.recipes[cooker_name]
+	local counts, tags = IngredientValues(names)
+
+	local winners, best, tested = nil, nil, 0
+
+	for _, row in ipairs(ranked) do
+		if row.priority < min_priority or (best ~= nil and row.priority < best) then
+			break
+		end
+
+		local recipe = recipes[row.name]
+		if recipe ~= nil then
+			tested = tested + 1
+			local ok, passes = pcall(recipe.test, cooker_name, counts, tags)
+			if ok and passes then
+				if best == nil then
+					best    = row.priority
+					winners = { row.name }
+				elseif row.priority == best then
+					winners[#winners + 1] = row.name
+				end
+			end
+		end
+	end
+
+	return winners, tested
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -364,6 +454,281 @@ local function DiscoverFromCards(pool, avail, types, cooker_name, entry)
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
+--  Path 3 -- ask each recipe what it wants, then build it
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Path 2 walks combinations and asks "what does this make?". That is the wrong
+-- way round for a big pantry: the number of four-ingredient combinations grows
+-- as the fourth power of the number of ingredient types, so a chest with thirty
+-- types has forty thousand of them and any budget that keeps a server tick
+-- short only ever samples a corner of it. Dishes that need an ingredient the
+-- player has two of -- which is exactly what a freshly installed food mod adds
+-- -- are the ones that corner never reaches.
+--
+-- So this path goes the other way: take a dish nobody has worked out how to
+-- make yet, find out which ingredients it cares about, and build a pot out of
+-- just those.
+--
+-- The trick is that a recipe will tell you, if you ask it right. A recipe test
+-- looks like
+--
+--     function(cooker, names, tags)
+--         return (names.corn or names.corn_cooked)
+--            and tags.sweetener and tags.frozen and tags.frozen >= 2
+--     end
+--
+-- and the only thing it can do with `names` and `tags` is index them. Hand it
+-- tables that write down every key they are asked for and it reports its own
+-- ingredient list -- no hard coded table, no parsing, and it stays right when
+-- the mod updates.
+--
+-- One pass is not enough, because `and` stops at the first false: a test that
+-- opens with `tags.meat and tags.meat >= 2` says nothing about its later terms
+-- unless meat comes back as at least 2, and one that says `not tags.monster`
+-- only continues when monster is absent. So the probe runs several times with
+-- different answers -- absent, 1, 2, 4 -- and takes the union. The answers come
+-- from a hash of the key, not from math.random, because this runs on the server
+-- and must not touch the world's RNG or return different results twice.
+
+local PROBE_ROUNDS = 24
+local PROBE_VALUES = { false, 1, 2, 4 }   -- false stands in for "not there"
+
+local function HashKey(s)
+	local h = 5381
+	for i = 1, #s do
+		h = (h * 33 + s:byte(i)) % 4294967296
+	end
+	return h
+end
+
+-- Returns the interest set and the number of test calls it cost (zero when the
+-- answer was already known).
+local function Interests(cooker_name, product, recipe)
+	local key    = cooker_name .. "/" .. product
+	local cached = Search._interests[key]
+	if cached ~= nil then
+		return cached, 0
+	end
+
+	local names, tags = {}, {}
+
+	if type(recipe.test) == "function" then
+		for round = 0, PROBE_ROUNDS - 1 do
+			local function pick(k)
+				local v = PROBE_VALUES[((HashKey(k) + round * 7) % #PROBE_VALUES) + 1]
+				if v == false then
+					return nil
+				end
+				return v
+			end
+
+			local nm = setmetatable({}, { __index = function(_, k) names[k] = true return pick("n" .. k) end })
+			local tg = setmetatable({}, { __index = function(_, k) tags[k]  = true return pick("t" .. k) end })
+
+			pcall(recipe.test, cooker_name, nm, tg)
+		end
+	end
+
+	cached = { names = names, tags = tags }
+	Search._interests[key] = cached
+	return cached, PROBE_ROUNDS
+end
+
+local function Providers()
+	if Search._providers ~= nil then
+		return Search._providers
+	end
+
+	local providers = {}
+
+	for prefab, data in pairs(cooking.ingredients or {}) do
+		for tag in pairs(data.tags or {}) do
+			local list = providers[tag]
+			if list == nil then
+				list = {}
+				providers[tag] = list
+			end
+			list[#list + 1] = prefab
+		end
+	end
+
+	Search._providers = providers
+	return providers
+end
+
+-- The ingredients worth trying for one dish: the prefabs it named, the most
+-- plentiful few carriers of each tag it asked about, and -- to fill the slots a
+-- recipe does not care about -- whatever the pantry has most of.
+local TARGET_MAX_TYPES  = 9
+local TARGET_PER_TAG    = 3
+
+local function TargetTypes(cooker_name, product, recipe, types, avail)
+	local want, cost = Interests(cooker_name, product, recipe)
+
+	local set, out = {}, {}
+
+	local function add(prefab)
+		if avail[prefab] ~= nil and not set[prefab] then
+			set[prefab] = true
+			out[#out + 1] = prefab
+		end
+	end
+
+	for name in pairs(want.names) do
+		add(name)
+	end
+
+	local providers = Providers()
+	for tag in pairs(want.tags) do
+		local carriers = {}
+		for _, prefab in ipairs(providers[tag] or {}) do
+			if avail[prefab] ~= nil then
+				carriers[#carriers + 1] = prefab
+			end
+		end
+		table.sort(carriers, function(a, b)
+			if avail[a] ~= avail[b] then
+				return avail[a] > avail[b]
+			end
+			return a < b
+		end)
+		for i = 1, math.min(#carriers, TARGET_PER_TAG) do
+			add(carriers[i])
+		end
+	end
+
+	-- types is already sorted most-plentiful-first by SelectTypes' caller.
+	for _, t in ipairs(types) do
+		if #out >= TARGET_MAX_TYPES then
+			break
+		end
+		add(t.prefab)
+	end
+
+	return out, cost
+end
+
+-- Walks the dishes this pantry has not solved yet, one budget's worth per pass,
+-- picking up where it left off so a cold pantry is covered over a few passes
+-- instead of in one long tick.
+local function DiscoverTargeted(pool, avail, types, cooker_name, entry, max_evals, max_dishes)
+	local recipes = cooking.recipes[cooker_name]
+	if recipes == nil or max_evals <= 0 or max_dishes <= 0 then
+		return 0
+	end
+
+	-- A stable order, so "carry on from last time" means something.
+	local order = entry.torder
+	if order == nil then
+		order = {}
+		for product in pairs(recipes) do
+			order[#order + 1] = product
+		end
+		table.sort(order)
+		entry.torder   = order
+		entry.tried    = {}
+		entry.tcursor  = 0
+		entry.tpending = #order
+	end
+
+	local n = #order
+	if n == 0 then
+		return 0
+	end
+
+	local evals   = 0
+	local visited = 0
+	local worked  = 0
+
+	while evals < max_evals and visited < n and worked < max_dishes do
+		entry.tcursor = (entry.tcursor % n) + 1
+		visited = visited + 1
+
+		local product = order[entry.tcursor]
+		local recipe  = recipes[product]
+
+		if recipe ~= nil and not entry.tried[product]
+			and (entry.map[product] ~= nil
+				or type(recipe.test) ~= "function"
+				or not Core.IsDishAllowed(cooker_name, product)) then
+			-- Already solved, untestable, or filtered out: mark it done so the
+			-- sweep finishes instead of walking past it forever.
+			entry.tried[product] = true
+			entry.tpending       = entry.tpending - 1
+
+		elseif recipe ~= nil and not entry.tried[product] then
+
+			entry.tried[product]  = true
+			entry.tpending        = entry.tpending - 1
+			worked = worked + 1
+
+			local pick, probed = TargetTypes(cooker_name, product, recipe, types, avail)
+			evals = evals + probed
+
+			local combo = {}
+			local used  = {}
+			local hit   = nil
+
+			local function Recurse(start, depth)
+				if hit ~= nil or evals >= max_evals then
+					return
+				end
+
+				if depth > POT_SLOTS then
+					evals = evals + 1
+
+					local counts, tags = IngredientValues(combo)
+					local ok, passes = pcall(recipe.test, cooker_name, counts, tags)
+					if ok and passes then
+						hit = { combo[1], combo[2], combo[3], combo[4] }
+					end
+					return
+				end
+
+				for i = start, #pick do
+					local prefab = pick[i]
+					local cap    = math.min(avail[prefab] or 0, POT_SLOTS)
+
+					if (used[prefab] or 0) < cap then
+						used[prefab]  = (used[prefab] or 0) + 1
+						combo[depth]  = prefab
+
+						Recurse(i, depth + 1)
+
+						used[prefab] = used[prefab] - 1
+
+						if hit ~= nil or evals >= max_evals then
+							return
+						end
+					end
+				end
+			end
+
+			Recurse(1, 1)
+
+			-- The dish passing its own test is not the same as the pot making
+			-- it: a higher priority recipe may claim the same four slots. So we
+			-- confirm the same way every other path does, and record whatever
+			-- actually wins -- which is still a dish we did not know about.
+			if hit ~= nil then
+				local winners, tested = ConfirmAtLeast(cooker_name, hit, recipe.priority or 0)
+				evals = evals + tested
+
+				if winners ~= nil and #winners > 0 then
+					local exclusive = #winners == 1
+					for _, name in ipairs(winners) do
+						local r = recipes[name]
+						Record(entry, name, hit, avail, r and r.cooktime or 1, exclusive)
+					end
+				end
+			end
+		end
+	end
+
+	return evals
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
 --  Path 2 -- bounded search, for dishes that state nothing
 -- ═══════════════════════════════════════════════════════════════════════════
 
@@ -539,6 +904,16 @@ function Search.Choose(pool, existing_dishes, is_warly, cooker_name)
 		return nil
 	end
 
+	-- Most plentiful first. Both the targeted pass (for its filler slots) and
+	-- SelectTypes want that order, and sorting once here keeps the two agreeing
+	-- about what "the ingredients we have plenty of" means.
+	table.sort(types, function(a, b)
+		if a.avail ~= b.avail then
+			return a.avail > b.avail
+		end
+		return a.prefab < b.prefab
+	end)
+
 	local budget = Core.Budget()
 
 	local key   = cooker_name .. "|" .. signature
@@ -557,13 +932,27 @@ function Search.Choose(pool, existing_dishes, is_warly, cooker_name)
 		entry.carded = true
 	end
 
+	-- Then ask the dishes themselves. This is what reaches a food mod's
+	-- recipes: they carry no card, and their ingredients are the ones a pantry
+	-- has two of, so the blind search below almost never stumbles onto them.
+	local targeted = DiscoverTargeted(pool, avail, types, cooker_name, entry,
+		budget.targeted_evals or 0, budget.targeted_dishes or 0)
+
 	-- The search only has to cover dishes that state no ingredients. A cold
 	-- pantry pays the full budget once; later passes just top the list up. And
 	-- when the cards already produced plenty to choose from -- which is the
 	-- normal case with Heap of Foods installed -- the search runs short, since
 	-- it would only be adding a few more vanilla dishes to an ample menu.
+	-- Once the directed pass has been through every dish in the cookbook, the
+	-- blind walk has almost nothing left to contribute: every dish that can
+	-- state what it wants has already been tried, so all it can still turn up
+	-- is a cheaper set of four for something we can make anyway. That is worth
+	-- a top-up, not a full budget -- and leaving it on full is expensive, since
+	-- its stop condition counts dishes it has never seen before and the
+	-- directed pass has just made sure there are none.
+	local swept    = (entry.tpending or 1) <= 0
 	local warm     = entry.count > 0 and carded == 0
-	local max_eval = warm and budget.refresh_evals or budget.max_evals
+	local max_eval = (warm or swept) and budget.refresh_evals or budget.max_evals
 
 	if carded >= 12 then
 		max_eval = math.min(max_eval, budget.refresh_evals)
@@ -575,8 +964,8 @@ function Search.Choose(pool, existing_dishes, is_warly, cooker_name)
 		budget.max_candidates, entry)
 
 	Core.Log(string.format(
-		"cooker=%s types=%d from_cards=%d searched=%d evals=%d candidates=%d",
-		cooker_name, #types, carded, #searched, evals, entry.count))
+		"cooker=%s types=%d from_cards=%d targeted=%d searched=%d evals=%d candidates=%d",
+		cooker_name, #types, carded, targeted, #searched, evals, entry.count))
 
 	-- ── Pick a dish ────────────────────────────────────────────────────────
 	local same_max = Core.SameDishMax()
