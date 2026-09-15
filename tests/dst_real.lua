@@ -92,6 +92,73 @@ function Real.Containers()
 	return containers
 end
 
+-- Heap of Foods registers its ingredients in one file, main/foods/hof_cooking.lua.
+-- Running the whole of it outside the game is not realistic -- it reaches for
+-- the engine in a dozen places -- but the ingredient registration happens near
+-- the top, before any of that, and it is the only part this repo needs to know
+-- about: it is what decides whether the chef will pick a bag of flour out of a
+-- chest.
+--
+-- So it is run under pcall and the *outcome* is what gets checked, not whether
+-- the file reached its last line. When Heap of Foods changes and the file stops
+-- part way somewhere new, the caller sees no ingredients and skips, rather than
+-- going red over something that is not this patch's business.
+function Real.LoadHeapOfFoods(root)
+	local probe = io.open(root .. "/main/foods/hof_cooking.lua", "r")
+	if probe == nil then
+		return nil, "hof_cooking.lua not found"
+	end
+	probe:close()
+
+	package.path = root .. "/scripts/?.lua;" .. root .. "/main/?.lua;" .. package.path
+
+	local function permissive()
+		return setmetatable({},
+		{
+			__index = function(t, k) local v = permissive() rawset(t, k, v) return v end,
+			__call = function() end, __concat = function() return "" end,
+			__tostring = function() return "" end,
+		})
+	end
+
+	_G.GLOBAL = _G
+
+	-- strict.lua normally supplies global(); it is kept out of this harness, and
+	-- with no strict mode there is nothing for it to declare.
+	_G.global = _G.global or function() end
+
+	_G.Asset = _G.Asset or function(kind, file) return { type = kind, file = file } end
+	_G.PICKABLE_FOOD_PRODUCTS = _G.PICKABLE_FOOD_PRODUCTS or permissive()
+	_G.AnimState = _G.AnimState or permissive()
+
+	-- Its recipes read a pile of its own TUNING constants that live in a file we
+	-- are not loading; anything missing answers 1.
+	if getmetatable(_G.TUNING) == nil then
+		setmetatable(_G.TUNING, { __index = function(t, k) rawset(t, k, 1) return 1 end })
+	end
+
+	local chunk, err = loadfile(root .. "/main/foods/hof_cooking.lua")
+	if chunk == nil then
+		return nil, err
+	end
+
+	setfenv(chunk, setmetatable(
+	{
+		GLOBAL              = _G,
+		AddIngredientValues = _G.AddIngredientValues,
+		AddCookerRecipe     = _G.AddCookerRecipe,
+		modimport           = function() end,
+		GetModConfigData    = function() return false end,
+		Asset               = _G.Asset,
+	}, { __index = _G }))
+
+	local ok, err2 = pcall(chunk)
+
+	-- The caller checks what registered, not whether it finished; the message is
+	-- only there to say where it stopped when nothing did.
+	return true, (not ok) and tostring(err2) or nil
+end
+
 -- One food mod, described the way its own modmain.lua registers things.
 --   { root = "<workshop folder>",
 --     scripts = "scripts",                       -- added to package.path

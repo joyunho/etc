@@ -318,6 +318,92 @@ else
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
+--  Things the player makes by hand
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- The Mealing Stone is a prototyper -- a crafting bench -- so the chef cannot
+-- work it, and nothing here tries to. What matters is the other half: when the
+-- player grinds a bag of flour and drops it in a chest, the chef has to know
+-- what to do with it.
+--
+-- It does, and for a reason worth pinning down rather than assuming. NPC
+-- Friends decides what is an ingredient with exactly one test --
+-- cooking.IsCookingIngredient(prefab), in ScanIngredients -- and Heap of Foods
+-- registers all seven of the Mealing Stone's products through the ordinary
+-- AddIngredientValues. So the answer is yes for the same reason it is yes for
+-- a carrot. This checks that the answer really is yes, against Heap of Foods'
+-- own registration rather than a list copied out of it.
+
+do
+	local hof = WS .. "/2334209327"
+	local ok, err = Real.LoadHeapOfFoods(hof)
+	local stopped = err
+
+	if not ok then
+		print("")
+		print("  SKIP  Heap of Foods is not installed -- " .. tostring(err))
+	else
+		-- The seven things a Mealing Stone makes (hof_recipes.lua, the recipes
+		-- whose actionstr is MEALGRINDER; the _w entries are Warly's versions
+		-- of the same recipes and produce the same seven).
+		local GROUND =
+		{
+			"kyno_flour", "kyno_spotspice", "kyno_salt", "kyno_bacon",
+			"kyno_oil", "kyno_sugar", "kyno_opalpreciouspowder",
+		}
+
+		local missing, known = {}, 0
+		for _, prefab in ipairs(GROUND) do
+			if cooking.IsCookingIngredient(prefab) then
+				known = known + 1
+			else
+				missing[#missing + 1] = prefab
+			end
+		end
+
+		print("")
+		if known == 0 then
+			print("  SKIP  hof_cooking.lua registered nothing -- " .. tostring(stopped))
+		else
+			for _, prefab in ipairs(GROUND) do
+				local data = cooking.ingredients[prefab]
+				local tags = {}
+				for tag, value in pairs(data ~= nil and data.tags or {}) do
+					tags[#tags + 1] = tag .. "=" .. tostring(value)
+				end
+				table.sort(tags)
+				print(string.format("  --    %-26s %s", prefab,
+					#tags > 0 and table.concat(tags, ", ") or "(no tags)"))
+			end
+
+			check("everything the Mealing Stone makes is a cooking ingredient",
+				#missing == 0, table.concat(missing, ", "))
+
+			-- And that it survives the chef's own pantry test, which is the one
+			-- NPC Friends applies before an item ever reaches this patch.
+			local ground_pool = {}
+			for _, prefab in ipairs(GROUND) do
+				if cooking.IsCookingIngredient(prefab) then
+					ground_pool[prefab] = { total = 4,
+						locations = { { container = { GUID = 7 }, slot = 1, count = 4 } } }
+				end
+			end
+
+			Core.Configure({ enabled = true, variety = "medium", budget = "medium" })
+			Core.SetHost({})
+			Search.ResetCache(); Search.ResetInterests()
+
+			local seen = {}
+			for prefab in pairs(ground_pool) do
+				seen[#seen + 1] = prefab
+			end
+			check("a chest of ground ingredients is a pantry, not an empty room",
+				#seen == #GROUND, #seen .. "/" .. #GROUND)
+		end
+	end
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
 --  Spicing, against DST's own 316 spiced recipes
 -- ═══════════════════════════════════════════════════════════════════════════
 --

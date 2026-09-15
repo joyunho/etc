@@ -641,6 +641,49 @@ NPC Friends 의 왈리 NPC 가 Heap of Foods 를 비롯한 음식 모드의 요�
     한글 글꼴을 넣어 주는 모드를 같이 켜 두세요.
 
 
+[ 직접 만들어서 상자에 넣어 두신 것 ]
+
+  Mealing Stone(맷돌) 은 조리 기구가 아니라 제작대(prototyper)라서 요리사가
+  쓸 수 없습니다. 하지만 **직접 갈아서 상자에 넣어 두시면 요리사가 씁니다.**
+  따로 설정할 것 없습니다.
+
+  이유는 간단합니다. NPC Friends 가 "이게 요리 재료냐" 를 판정하는 방법은
+  딱 하나, cooking.IsCookingIngredient(prefab) 입니다. 그리고 Heap of Foods 는
+  맷돌 산물 7가지를 전부 평범한 AddIngredientValues 로 등록합니다.
+  당근이 재료인 것과 똑같은 이유로 재료입니다.
+
+      kyno_flour                 flour=1, inedible=1
+      kyno_spotspice             spotspice=1
+      kyno_salt                  inedible=1
+      kyno_bacon                 bacon=1, meat=0.5
+      kyno_oil                   oil=1
+      kyno_sugar                 sugar=1, sweetener=1
+      kyno_opalpreciouspowder    precious=1, sugar=2
+
+  (맷돌 조합법은 14개지만 _w 가 붙은 7개는 왈리 전용 조합법이고 나오는
+   물건은 같습니다.)
+
+  이걸 넣어 두면 Heap of Foods 요리 412개 중 상당수가 열립니다.
+
+      spotspice 를 쓰는 요리   93개
+      flour 를 쓰는 요리       77개
+      kyno_salt 를 쓰는 요리   49개
+      kyno_sugar / sugar       44개
+      oil                      18개
+      bacon                    9개
+
+  같은 이야기가 다른 것에도 그대로 적용됩니다. 어떤 모드든 정상적인 방법으로
+  등록한 재료라면 상자에 넣어 두기만 하면 됩니다.
+
+      요리 재료      AddIngredientValues 로 등록된 것 전부
+      향신료         "spice" 표가 붙은 것
+      말릴 것        dryable 부품이 있는 것
+      통 재료        brewing 쪽에 등록된 것
+      양동이         "bucket" 표 + milker 부품
+
+  요리사가 목록을 따로 들고 있지 않습니다. 게임에 물어봅니다.
+
+
 [ 개인정보 ]
 
   collect.bat 과 collectmods.bat 은 계정 이름, 스팀 ID, 토큰처럼 보이는
