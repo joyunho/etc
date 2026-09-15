@@ -82,6 +82,15 @@ def build(geom_dir, tr_dir, out_path):
                 continue
             groups.setdefault(t.get("group") or b["id"], []).append(b["id"])
 
+        # a reader who saw the box sitting on a drawing can move its left edge
+        for b in geom:
+            left = (tr.get(b["id"]) or {}).get("left")
+            if isinstance(left, int) and b["x"] < left < b["x"] + b["w"]:
+                b["cover"] = [[max(c[0], left), c[1], c[2], c[3]] for c in b["cover"]]
+                b["cover"] = [c for c in b["cover"] if c[2] - c[0] >= 6]
+                b["w"] -= left - b["x"]
+                b["x"] = left
+
         entries = []
         for g, ids in sorted(groups.items()):
             ids.sort()

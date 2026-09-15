@@ -112,3 +112,28 @@ the patch does it itself.
 One `Text` widget draws in one colour, so a gold term inside a brown sentence
 comes out brown. Whole gold headings stay gold. `render.py` draws the same
 pages in Python with the colour runs intact, which is what the previews show.
+
+### What the pixels cannot settle
+
+Three things defeated colour and shape alone, and each is handled by a
+different signal:
+
+* **An icon's small dark details** -- the speed lines under a shoe, a skull's
+  eye sockets -- are letter-sized, letter-coloured and sit on the page, so the
+  glyph test accepts them and they join the line beside them, which then claims
+  to start seventy pixels further left and to be twice as tall as it is. They
+  are found instead as *what is neither page nor letter*, closed up into
+  blobs. Only letter-sized ink is grown before that subtraction: growing all of
+  it closes the gap across an icon's own thin outline and the icon stops being
+  found at all.
+* **A pale icon with a closed outline** -- a page-coloured shield -- is page
+  inside and ink around, indistinguishable from writing by colour. But the page
+  background is one huge connected region and the inside of such an icon is a
+  small island walled off by its own outline, so keeping only the big
+  components of the page mask separates them.
+* **A pale icon with a broken outline** -- the white skull -- is not walled off,
+  and leaves barely twice the smudge of a perfectly clean title strip (0.009
+  against 0.005 measured). That is too close to call. So the page's own text
+  margins are published in the geometry file, and the reader looking at the
+  picture, who can see it at a glance, moves the edge to one of them. The fix
+  is a choice between two numbers, not a guess at a coordinate.

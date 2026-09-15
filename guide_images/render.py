@@ -92,6 +92,15 @@ def render(page, blocks_geom, tr, out_path, src=None):
     by_id = {b["id"]: b for b in blocks_geom}
     trs = {t["id"]: t for t in tr}
 
+    # a reader who saw the box sitting on a drawing can move its left edge
+    for b in blocks_geom:
+        left = (trs.get(b["id"]) or {}).get("left")
+        if isinstance(left, int) and b["x"] < left < b["x"] + b["w"]:
+            b["cover"] = [[max(c[0], left), c[1], c[2], c[3]] for c in b["cover"]]
+            b["cover"] = [c for c in b["cover"] if c[2] - c[0] >= 6]
+            b["w"] -= left - b["x"]
+            b["x"] = left
+
     # paint out every block that is really text
     groups = {}
     for b in blocks_geom:
