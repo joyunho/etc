@@ -49,6 +49,7 @@ MERGE_ORDER = [
     (SCRIPTS / "hofnpc_slots.lua", "Slots"),
     (SCRIPTS / "hofnpc_variety.lua", "Variety"),
     (SCRIPTS / "hofnpc_search.lua", "Search"),
+    (SCRIPTS / "hofnpc_cookware.lua", "Cookware"),
     (SCRIPTS / "hofnpc_diag.lua", "Diag"),
 ]
 
@@ -214,12 +215,57 @@ NPC Friends 의 왈리 NPC 가 Heap of Foods 를 비롯한 음식 모드의 요�
   files\\npc_hof_cooking.lua 를 메모장으로 열면 맨 위에 USER_SETTINGS 가
   있습니다. 값을 고친 뒤 install.bat 을 다시 실행하면 적용됩니다.
 
-    variety        요리 다양성   "off" / "low" / "medium" / "high"
-    budget         탐색량        "low" / "medium" / "high"
-    same_dish_max  같은 요리를 창고에 몇 개까지 쌓을지 (0 = 모드 설정 따름)
-    allow_negative 체력/정신력이 깎이는 요리도 만들지
-    explain        요리를 못 할 때 왈리가 그 이유를 직접 말함 (기본 켜짐)
-    debug          고른 이유까지 전부 서버 로그에 출력
+    variety          요리 다양성   "off" / "low" / "medium" / "high"
+    budget           탐색량        "low" / "medium" / "high"
+    same_dish_max    같은 요리를 창고에 몇 개까지 쌓을지 (0 = 모드 설정 따름)
+    allow_negative   체력/정신력이 깎이는 요리도 만들지 (기본 켜짐)
+    taste_everything 한 가지를 두 번 만들기 전에 다른 것을 먼저 만들지 (기본 켜짐)
+    spread_cookware  4칸 안 되는 도구는 건너뛰고 냄비를 돌아가며 쓸지 (기본 켜짐)
+    explain          요리를 못 할 때 왈리가 그 이유를 직접 말함 (기본 켜짐)
+    debug            고른 이유까지 전부 서버 로그에 출력
+
+
+[ 커피처럼 값어치가 낮은 요리 ]
+
+  왈리 NPC 는 요리의 값어치로 고릅니다 (체력 + 배부름*0.4 + 정신력*0.8).
+  그런데 값어치 차이가 너무 큽니다. 재료 30종에 음식 모드 3개를 깔면
+
+      330  만드레이크 요리
+      124  달걀 요리
+        3  에스프레소  (커피는 원래 정신력을 -5 깎는 것이 컨셉)
+
+  이 상태면 커피는 영원히 안 나옵니다. "새 요리 가산점" 을 아무리 줘도
+  327점 차이를 뒤집을 수는 없습니다.
+
+  그래서 taste_everything 이 있습니다. 아직 한 번도 안 만든 요리가 남아
+  있으면 그것부터 만듭니다. 한 바퀴 돌고 나면 다시 값어치 순으로
+  돌아갑니다. 창고에 같은 것 4개보다 여러 가지가 하나씩 있는 쪽이
+  낫기도 하고요.
+
+  allow_negative 와 같이 켜져 있어야 커피가 나옵니다. 둘 다 기본값입니다.
+
+
+[ 왈리의 휴대용 양념기를 냄비로 착각하는 문제 ]
+
+  NPC Friends 는 근처에서 "stewer" 표가 붙은 것을 전부 냄비로 봅니다.
+  그 표는 stewer 부품이 스스로 붙이는 것이라(scripts/components/stewer.lua),
+  왈리의 휴대용 양념기도 같이 걸려듭니다.
+
+  양념기는 칸이 2개뿐이고, 1번 칸은 "요리된 음식", 2번 칸은 "향신료" 만
+  받습니다(scripts/containers.lua). 생재료는 아예 안 들어갑니다.
+  그런데 왈리 NPC 는 언제나 4칸짜리 요리를 계획하고, 재료 4개를 안 들고
+  있으면 포기하게 되어 있습니다.
+
+  즉 냄비 옆에 양념기를 놓아 두면 — 왈리를 쓰는 사람은 거기 놓습니다 —
+  NPC 가 양념기로 걸어가서 아무것도 못 넣고 요리에 실패합니다.
+
+  spread_cookware 가 그것을 막습니다. 4칸이 안 되는 도구는 냄비 후보에서
+  빼고, 쓸 수 있는 냄비가 여러 개면 돌아가며 씁니다.
+  다 만든 음식을 거두는 것은 그대로입니다. NPC Friends 의 수확 단계는
+  이 함수를 거치지 않고 목록을 직접 보기 때문입니다.
+
+  * 양념기 자체를 NPC 가 쓰게 만들 수는 없습니다. 재료 4개를 요구하는
+    쪽이 NPC Friends 의 난독화된 행동 파일 안에 있어서 손댈 수 없습니다.
 
 
 [ 왈리가 "재료가 없어요" 라고 할 때 ]

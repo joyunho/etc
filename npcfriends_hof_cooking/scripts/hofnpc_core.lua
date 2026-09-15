@@ -25,6 +25,8 @@ Core.cfg =
 	explain        = true,      -- say in the log why the chef gave up
 	debug          = false,
 	protect        = {},        -- [prefab] = true, never spent as an ingredient
+	spread_cookware = true,     -- skip stations too small to cook in, rotate the rest
+	taste_everything = true,    -- make one of each before making a second of anything
 }
 
 -- Variety weights. The dish the NPC picks is chosen by

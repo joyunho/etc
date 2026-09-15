@@ -260,6 +260,52 @@ check("a dish can be planned from a closed chest",
 	from_closed ~= nil and from_closed ~= ORIGINAL_SENTINEL,
 	from_closed == ORIGINAL_SENTINEL and "fell back" or tostring(from_closed and from_closed.name))
 
+print("\n=========== 6b. the station chooser goes through the shipped file ===========")
+
+-- The seasoning station fix has to reach the game through Install(), not just
+-- through the module, so drive it the way npc_cooking_planner.lua does.
+do
+	local guid = 0
+	local function Station(prefab, slots)
+		guid = guid + 1
+		return {
+			prefab = prefab, GUID = guid,
+			IsValid = function() return true end,
+			components = {
+				stewer = { IsCooking = function() return false end, IsDone = function() return false end },
+				container = { numslots = slots, GetNumSlots = function(self) return self.numslots end },
+			},
+		}
+	end
+
+	local P = NewPlanner()
+	-- NPC Friends' own chooser: first station with an idle stewer, whatever it is.
+	P.FindAvailableCookpot = function(cookpots)
+		for _, pot in ipairs(cookpots) do
+			if pot.components.stewer and not pot.components.stewer:IsCooking()
+				and not pot.components.stewer:IsDone() then
+				return pot
+			end
+		end
+		return nil
+	end
+
+	local before = P.FindAvailableCookpot({ Station("portablespicer", 2), Station("cookpot", 4) })
+	check("without the patch the chef would walk to the seasoning station",
+		before.prefab == "portablespicer", before.prefab)
+
+	Patch.applied = false
+	Patch.Install(P)
+
+	local after = P.FindAvailableCookpot({ Station("portablespicer", 2), Station("cookpot", 4) })
+	check("after Install() it walks to the pot instead",
+		after ~= nil and after.prefab == "cookpot", after and after.prefab or "nil")
+
+	local none = P.FindAvailableCookpot({ Station("portablespicer", 2) })
+	check("and a seasoning station on its own is refused rather than stalled on",
+		none == nil, none and none.prefab or "nil")
+end
+
 print("\n=========== 7. it explains why the chef gave up ===========")
 
 local chef = NewChef()

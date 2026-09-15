@@ -971,7 +971,23 @@ function Search.Choose(pool, existing_dishes, is_warly, cooker_name)
 	local same_max = Core.SameDishMax()
 	local preset   = Core.Variety()
 
+	-- Two shortlists. The second is dishes the chef has never made, and while
+	-- it has anything in it the first is ignored.
+	--
+	-- A score bonus cannot do this job. The chef rates a dish by what eating it
+	-- gives you, and the spread is enormous: on a pantry with three food mods
+	-- installed the best dish rates 330 and an espresso rates 3, because coffee
+	-- is meant to cost sanity. No novelty bonus that leaves the ordinary
+	-- ordering intact is ever going to be worth 327 points, so a mod whose
+	-- dishes are deliberately cheap would be installed and never once cooked.
+	--
+	-- Trying each dish once before repeating any is also just the better larder:
+	-- one of everything beats four of the same thing, and after the first pass
+	-- through the cookbook this stops applying and value decides again.
+	local first_taste = Core.cfg.taste_everything and preset.novelty_bonus > 0
+
 	local best_product, best_score, best_data = nil, nil, nil
+	local new_product,  new_score,  new_data  = nil, nil, nil
 
 	for product, data in pairs(entry.map) do
 		local stored = existing_dishes[product] or 0
@@ -991,7 +1007,17 @@ function Search.Choose(pool, existing_dishes, is_warly, cooker_name)
 			if best_score == nil or score > best_score then
 				best_product, best_score, best_data = product, score, data
 			end
+
+			if first_taste and stored == 0 and not Variety.EverMade(product) then
+				if new_score == nil or score > new_score then
+					new_product, new_score, new_data = product, score, data
+				end
+			end
 		end
+	end
+
+	if new_product ~= nil then
+		best_product, best_score, best_data = new_product, new_score, new_data
 	end
 
 	if best_product == nil then

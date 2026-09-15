@@ -54,6 +54,10 @@ function Install.Install(CookingPlanner)
 	-- 요리를 못 할 때 이유를 설명해 주는 진단기
 	pcall(Diag.Attach, CookingPlanner)
 
+	-- 4칸이 안 되는 도구(왈리의 휴대용 양념기)를 냄비로 고르지 않게 하고,
+	-- 쓸 수 있는 냄비는 돌아가며 쓰게 합니다.
+	pcall(Cookware.Attach, CookingPlanner)
+
 	local original = CookingPlanner.FindBestRecipe
 
 	CookingPlanner.FindBestRecipe = function(pool, existing_dishes, is_warly, cooker_name)

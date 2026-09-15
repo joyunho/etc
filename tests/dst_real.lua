@@ -73,6 +73,25 @@ function Real.Load(dst_scripts)
 	return cooking
 end
 
+-- The real scripts/containers.lua, which is where a station's slot count comes
+-- from. It reaches for two things the engine would have provided; nothing else
+-- in it is stubbed, so params.portablespicer.widget.slotpos is the genuine
+-- article.
+function Real.Containers()
+	if _G.Vector3 == nil then
+		_G.Vector3 = function(x, y, z) return { x = x, y = y, z = z } end
+	end
+	if _G.IsSteamDeck == nil then
+		_G.IsSteamDeck = function() return false end
+	end
+
+	local ok, containers = pcall(require, "containers")
+	if not ok then
+		return nil, tostring(containers)
+	end
+	return containers
+end
+
 -- One food mod, described the way its own modmain.lua registers things.
 --   { root = "<workshop folder>",
 --     scripts = "scripts",                       -- added to package.path

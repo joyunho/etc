@@ -12,14 +12,26 @@ local HISTORY_MAX = 40
 -- Newest entry is at the end of the array.
 Variety.history = {}
 
+-- Every dish made this session, which the recency window forgets: history only
+-- holds the last HISTORY_MAX cooks, and "have we ever made this" has to outlive
+-- that for the chef to work through a cookbook rather than circle the top of it.
+Variety.ever = {}
+
 function Variety.Reset()
 	Variety.history = {}
+	Variety.ever    = {}
+end
+
+function Variety.EverMade(product)
+	return Variety.ever[product] == true
 end
 
 function Variety.Record(product)
 	if product == nil then
 		return
 	end
+
+	Variety.ever[product] = true
 
 	local h = Variety.history
 	h[#h + 1] = product

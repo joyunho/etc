@@ -135,6 +135,89 @@ check("cooks it once the player opts in",
 	risky ~= nil and risky.name == "kyno_bitterbrew", risky and risky.name or "nil")
 Core.Configure{ allow_negative = false }
 
+print("\n=========== 5b. one of each before a second of anything ===========")
+
+-- A cheap dish must still get made. Coffee is the case this exists for: every
+-- dish DST Coffee and More adds costs 5 sanity on purpose, which rates it at 3
+-- against a top dish's 330, so no bonus that leaves the ordering intact would
+-- ever let one be brewed.
+Core.Configure{ variety = "medium", budget = "high", allow_negative = false,
+	taste_everything = true, same_dish_max = 3 }
+Search.ResetCache(); Variety.Reset(); Core.ClearScoreCache()
+
+local larder, order = {}, {}
+for _ = 1, 40 do
+	local card = Search.Choose(Stub.PANTRY, larder, true, Stub.COOKER)
+	if card ~= nil then
+		order[#order + 1] = card.name
+		larder[card.name] = (larder[card.name] or 0) + 1
+	end
+end
+
+local repeated_before_new = false
+local made = {}
+for i, name in ipairs(order) do
+	if made[name] and i <= #order then
+		-- Something was cooked twice. That is only allowed once the menu has
+		-- nothing left that has never been cooked, which the run below checks
+		-- directly; here we only want to see that it does not happen early.
+		if i <= 10 then repeated_before_new = true end
+	end
+	made[name] = true
+end
+
+local distinct_first_ten = {}
+for i = 1, math.min(10, #order) do distinct_first_ten[order[i]] = true end
+local n = 0
+for _ in pairs(distinct_first_ten) do n = n + 1 end
+
+check("the first ten cooks are ten different dishes", n == 10 and not repeated_before_new,
+	n .. " distinct: " .. table.concat(order, ", ", 1, math.min(10, #order)))
+
+-- The contract, stated directly: nothing is cooked twice while something on the
+-- menu has never been cooked at all.
+Core.Configure{ variety = "medium", budget = "high", taste_everything = true, same_dish_max = 3 }
+Search.ResetCache(); Variety.Reset(); Core.ClearScoreCache()
+
+local seen, larder2, breaches = {}, {}, 0
+for _ = 1, 40 do
+	-- What the chef could have made this pass, before it chose.
+	local card = Search.Choose(Stub.PANTRY, larder2, true, Stub.COOKER)
+	if card ~= nil then
+		if seen[card.name] then
+			-- A repeat. Fine only if every other reachable dish is also spoken
+			-- for; the cache holds exactly what it knew about at that moment.
+			for _, entry in pairs(Search._cache) do
+				for product in pairs(entry.map) do
+					if not seen[product]
+						and (larder2[product] or 0) == 0
+						and Core.IsDishAllowed(Stub.COOKER, product) then
+						breaches = breaches + 1
+					end
+				end
+			end
+		end
+		seen[card.name] = true
+		larder2[card.name] = (larder2[card.name] or 0) + 1
+	end
+end
+check("nothing is cooked twice while something has never been cooked",
+	breaches == 0, breaches .. " breach(es)")
+
+-- variety = "off" means "always the best dish", so it must opt out.
+Core.Configure{ variety = "off", budget = "high", taste_everything = true, same_dish_max = 3 }
+Search.ResetCache(); Variety.Reset(); Core.ClearScoreCache()
+local off_larder, off_distinct = {}, 0
+for _ = 1, 20 do
+	local card = Search.Choose(Stub.PANTRY, off_larder, true, Stub.COOKER)
+	if card ~= nil then off_larder[card.name] = (off_larder[card.name] or 0) + 1 end
+end
+for _ in pairs(off_larder) do off_distinct = off_distinct + 1 end
+check("variety=off still means the best dish, not a tour of the cookbook",
+	off_distinct < n, off_distinct .. " vs " .. n)
+
+Core.Configure{ taste_everything = true, same_dish_max = nil }
+
 print("\n=========== 6. protected ingredients are never spent ===========")
 Core.Configure{ variety = "off", budget = "high", protect = { kyno_shark_fin = true } }
 Search.ResetCache(); Variety.Reset()

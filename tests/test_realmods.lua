@@ -260,6 +260,106 @@ local function UsesModIngredient()
 	return used
 end
 
+-- ═══════════════════════════════════════════════════════════════════════════
+--  The station the chef walks to
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- hofnpc_cookware refuses any station too small to hold a four-ingredient dish.
+-- The number that makes that right is DST's own, so read it from DST.
+
+local Cookware = require("hofnpc_cookware")
+
+local containers, cerr = Real.Containers()
+if containers == nil then
+	print("  SKIP  containers.lua did not load -- " .. tostring(cerr))
+else
+	local function Slots(prefab)
+		local params = containers.params[prefab]
+		return params and params.widget and params.widget.slotpos and #params.widget.slotpos or nil
+	end
+
+	local function Station(prefab)
+		local n = Slots(prefab)
+		return
+		{
+			prefab = prefab, GUID = 1,
+			IsValid = function() return true end,
+			components =
+			{
+				stewer = { IsCooking = function() return false end, IsDone = function() return false end },
+				container = n and { numslots = n, GetNumSlots = function(self) return self.numslots end } or nil,
+			},
+		}
+	end
+
+	print("")
+	for _, prefab in ipairs({ "cookpot", "portablecookpot", "archive_cookpot", "portablespicer" }) do
+		print(string.format("  --    %-18s %s slots (from DST's containers.lua)", prefab, tostring(Slots(prefab))))
+	end
+
+	check("DST says a Crock Pot has four slots", Slots("cookpot") == 4, tostring(Slots("cookpot")))
+	check("DST says Warly's seasoning station has two", Slots("portablespicer") == 2,
+		tostring(Slots("portablespicer")))
+
+	for _, prefab in ipairs({ "cookpot", "portablecookpot", "archive_cookpot" }) do
+		check(prefab .. " is accepted as a place to cook", Cookware.CanTakeLoad(Station(prefab)))
+	end
+	check("the seasoning station is not", not Cookware.CanTakeLoad(Station("portablespicer")))
+
+	-- And the thing that actually goes wrong in a Warly base: the station is in
+	-- the list, listed first, and the chef must still find the pot.
+	Cookware.Reset()
+	Core.Configure({ enabled = true, spread_cookware = true })
+	local chosen = Cookware.FindAvailableCookpot({ Station("portablespicer"), Station("cookpot") })
+	check("a seasoning station next to the pot does not stall the chef",
+		chosen ~= nil and chosen.prefab == "cookpot", chosen and chosen.prefab or "nil")
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+--  Coffee, which only gets made when negative dishes are allowed
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Every DST Coffee and More dish costs 5 sanity, on purpose. The shipped
+-- default now allows that; with it off not one of them can ever be cooked.
+
+local COFFEE = { "espresso", "black_coffee", "cappuccino", "latte", "caramel_macchiato", "coffeeham" }
+
+local function CoffeeMade(allow_negative)
+	math.randomseed(20260915)
+	Search.ResetCache(); Search.ResetInterests(); Variety.Reset(); Core.ClearScoreCache()
+	Core.Configure({ variety = "medium", budget = "medium", same_dish_max = 3,
+		allow_negative = allow_negative })
+	Core.SetHost({})
+
+	local pool, existing, made = NewPool(), {}, {}
+	for _ = 1, 80 do
+		local chosen = Search.Choose(pool, existing, true, COOKER)
+		if chosen ~= nil then
+			existing[chosen.name] = (existing[chosen.name] or 0) + 1
+			made[chosen.name] = true
+		end
+	end
+
+	local n = {}
+	for _, name in ipairs(COFFEE) do
+		if made[name] then n[#n + 1] = name end
+	end
+	return n
+end
+
+print("")
+if cooking.recipes[COOKER].espresso == nil then
+	print("  SKIP  DST Coffee and More is not installed")
+else
+	local with    = CoffeeMade(true)
+	local without = CoffeeMade(false)
+	print("  --    allow_negative = true  -> " .. (#with > 0 and table.concat(with, ", ") or "none"))
+	print("  --    allow_negative = false -> " .. (#without > 0 and table.concat(without, ", ") or "none"))
+	check("coffee gets brewed once negative dishes are allowed", #with > 0)
+	check("and never gets brewed while they are not", #without == 0,
+		table.concat(without, ", "))
+end
+
 -- A non-Warly chef cooks at a plain Crock Pot, so that table has to work too.
 do
 	local before = COOKER
