@@ -559,7 +559,9 @@ for i = 1, 15 do
 	if it ~= nil and it.prefab == "smallmeat" then still_held = true break end
 end
 check("a refused rack gives the food back", still_held)
-check("and it counts as a strike", Stations.strikes == 1, tostring(Stations.strikes))
+check("and it counts as a strike against drying only", Stations.strikes.dry == 1,
+	tostring(Stations.strikes.dry))
+check("spicing is not punished for the rack's trouble", Stations.strikes.spice == 0)
 
 Core.Configure({ use_dryer = false })
 Stations.Reset()
@@ -584,10 +586,10 @@ Stations.last[chef.GUID] = true
 check("but never twice in a row", Stations.Wanted() == false)
 
 Stations.last[chef.GUID] = false
-Stations.strikes = 3
+Stations.strikes.spice = 3
 check("and not at all once the station keeps refusing", Stations.Wanted() == false)
 
-Stations.strikes = 0
+Stations.strikes.spice = 0
 Core.Configure({ use_spicer = false })
 check("turning it off stops it", Stations.Wanted() == false)
 Core.Configure({ use_spicer = true })

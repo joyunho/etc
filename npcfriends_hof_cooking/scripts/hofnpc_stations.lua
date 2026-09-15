@@ -82,11 +82,14 @@ local SPICE_SLOTS = 2
 -- the item entity itself (dryer.lua: `dryable:Remove()`), so nothing is left
 -- to clean up. Harvesting is the behaviour's own, through the same adapter.
 
--- Enough strikes and we stop offering the station for this server session.
+-- Enough strikes and we stop offering that kind of station for this server
+-- session. Counted per kind: a drying rack that will not take anything is no
+-- reason to stop spicing, and with both switched on a shared counter would
+-- have one machine's trouble shut the other one down.
 local STRIKE_LIMIT = 3
 
 Stations.attached  = false
-Stations.strikes   = 0
+Stations.strikes   = { spice = 0, dry = 0 }
 Stations._orig     = {}
 
 -- One chef on the surface and one in the caves plan independently, so the job
@@ -103,7 +106,7 @@ Stations.last    = {}   -- [guid] = true when that chef's last job was a spicing
 local PAD = "\1hofnpc_stations_pad"
 
 function Stations.Reset()
-	Stations.strikes = 0
+	Stations.strikes = { spice = 0, dry = 0 }
 	Stations.pending = nil
 	Stations.npc     = nil
 	Stations.jobs    = {}
@@ -740,15 +743,17 @@ function Stations.Attach(planner)
 				started = false
 			end
 
+			local counted = kind or "spice"
+
 			if started then
-				Stations.strikes = 0
+				Stations.strikes[counted] = 0
 				if node ~= nil then
 					node._cook_start_time = GetTime()
 				end
 			else
-				Stations.strikes = Stations.strikes + 1
-				if Stations.strikes >= STRIKE_LIMIT then
-					Core.Info("these stations are not taking orders -- leaving them alone from now on")
+				Stations.strikes[counted] = (Stations.strikes[counted] or 0) + 1
+				if Stations.strikes[counted] >= STRIKE_LIMIT then
+					Core.Info(counted .. ": this kind of station is not taking orders -- leaving it alone from now on")
 				end
 			end
 
@@ -771,12 +776,18 @@ function Stations.Wanted()
 		return false
 	end
 
-	if not Stations.attached or Stations.strikes >= STRIKE_LIMIT or Stations.pending == nil then
+	if not Stations.attached or Stations.pending == nil then
 		return false
 	end
 
-	-- Each kind of machine has its own switch.
-	if Stations.pending.kind == "dry" then
+	-- Each kind of machine has its own switch and its own patience.
+	local kind = Stations.pending.kind or "spice"
+
+	if (Stations.strikes[kind] or 0) >= STRIKE_LIMIT then
+		return false
+	end
+
+	if kind == "dry" then
 		if not Core.cfg.use_dryer then return false end
 	elseif not Core.cfg.use_spicer then
 		return false
@@ -817,7 +828,7 @@ function Stations.AttachPlanner(planner)
 			pcall(Stations.Attach, planner)
 		end
 
-		if Stations.attached and Stations.strikes < STRIKE_LIMIT then
+		if Stations.attached then
 			pcall(function()
 				local existing = {}
 				if type(planner.CountExistingDishes) == "function" then
@@ -834,7 +845,7 @@ function Stations.AttachPlanner(planner)
 
 				-- A seasoning station first: spicing something already cooked is
 				-- worth more than drying something that could still be cooked.
-				if Core.cfg.use_spicer then
+				if Core.cfg.use_spicer and (Stations.strikes.spice or 0) < STRIKE_LIMIT then
 					for _, ent in ipairs(cookpots or {}) do
 						if ent ~= nil and ent:IsValid() and Stations.IsStation(ent) and Idle(ent) then
 							Stations.pending = Stations.Choose(ent, Stations.Scan(containers), existing)
@@ -843,7 +854,8 @@ function Stations.AttachPlanner(planner)
 					end
 				end
 
-				if Stations.pending == nil and Core.cfg.use_dryer then
+				if Stations.pending == nil and Core.cfg.use_dryer
+					and (Stations.strikes.dry or 0) < STRIKE_LIMIT then
 					for _, ent in ipairs(cookpots or {}) do
 						if ent ~= nil and ent:IsValid() and Stations.IsDryProxy(ent) and Idle(ent) then
 							Stations.pending = Stations.ChooseDry(ent, Stations.ScanDryables(containers), existing)
