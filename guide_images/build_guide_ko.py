@@ -46,8 +46,20 @@ def runs(s, base):
     return out or [(s, base)]
 
 
+# Characters the game's Korean font cannot draw come out as empty boxes. The
+# sun that marks a perk's cost in Stars is one of them, and the mod's own
+# Korean already calls that currency 별.
+UNDRAWABLE = {"\u263c": "별", "\u2726": "★", "\u2605": "★"}
+
+
+def drawable(s):
+    for bad, good in UNDRAWABLE.items():
+        s = s.replace(bad, good)
+    return s
+
+
 def plain(s):
-    return RUN.sub(lambda m: m.group(2), s).replace("\n", " ").replace("\r", " ")
+    return drawable(RUN.sub(lambda m: m.group(2), s).replace("\n", " ").replace("\r", " "))
 
 
 def dominant(s, base):

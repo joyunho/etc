@@ -40,7 +40,8 @@ def runs(s, base):
 
 
 def tokens(s):
-    s = s.replace("\n", " ").replace("\r", " ")
+    import build_guide_ko
+    s = build_guide_ko.drawable(s.replace("\n", " ").replace("\r", " "))
     out, buf = [], ""
     for ch in s:
         if ch == " ":

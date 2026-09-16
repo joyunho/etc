@@ -197,12 +197,14 @@ local function Run(budget, passes)
 	Core.SetHost({})
 
 	local pool, existing, cooked = NewPool(), {}, {}
-	local worst = 0
+	local worst, times = 0, {}
 
 	for _ = 1, passes do
 		local t0 = os.clock()
 		local chosen = Search.Choose(pool, existing, true, COOKER)
-		worst = math.max(worst, (os.clock() - t0) * 1000)
+		local ms = (os.clock() - t0) * 1000
+		worst = math.max(worst, ms)
+		times[#times + 1] = ms
 
 		if chosen ~= nil then
 			cooked[chosen.name] = true
@@ -221,14 +223,16 @@ local function Run(budget, passes)
 		if moddish[product] then made = made + 1 end
 	end
 
-	return found, made, distinct, worst
+	table.sort(times)
+	local typical = #times > 0 and times[math.ceil(#times / 2)] or 0
+	return found, made, distinct, worst, typical
 end
 
 print("")
 for _, budget in ipairs({ "low", "medium", "high" }) do
-	local found, made, distinct, worst = Run(budget, 60)
-	print(string.format("  --    budget=%-6s  worked out %d/%d mod dishes, cooked %d of them, %d dishes in all, worst pass %.1f ms",
-		budget, found, total_mod, made, distinct, worst))
+	local found, made, distinct, worst, typical = Run(budget, 60)
+	print(string.format("  --    budget=%-6s  worked out %d/%d mod dishes, cooked %d of them, %d dishes in all, typical pass %.1f ms, worst %.1f ms",
+		budget, found, total_mod, made, distinct, typical, worst))
 
 	-- Before the recipe-directed pass existed these were 9, 15 and 25 found and
 	-- 5, 9 and 15 cooked, and the medium pass cost 22 ms. The thresholds are
@@ -237,7 +241,14 @@ for _, budget in ipairs({ "low", "medium", "high" }) do
 	check(budget .. ": most of the mod cookbook is reachable", found >= 24,
 		found .. "/" .. total_mod)
 	check(budget .. ": mod dishes actually get cooked", made >= 12, tostring(made))
-	check(budget .. ": a planning pass stays well inside a server tick", worst < 25,
+
+	-- Two separate claims, because the worst of sixty passes on a shared
+	-- machine is mostly a measure of how busy the machine was. What the game
+	-- needs is that the ordinary pass is cheap and that even a bad one still
+	-- fits the 33 ms of a server tick.
+	check(budget .. ": the ordinary planning pass is cheap", typical < 15,
+		string.format("%.1f ms", typical))
+	check(budget .. ": even the worst pass fits a server tick", worst < 33,
 		string.format("%.1f ms", worst))
 end
 
