@@ -14,9 +14,14 @@ Output:
     scripts/guide_ko_data.lua
 """
 import json
+import os
 import re
 import statistics
+import sys
 from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import geom
 
 RUN = re.compile(r"\{\{([gnpi])\|(.*?)\}\}")
 RUN_COLOUR = {"g": "gold", "n": "navy", "p": "plum", "i": "ink"}
@@ -42,7 +47,7 @@ def runs(s, base):
 
 
 def plain(s):
-    return RUN.sub(lambda m: m.group(2), s)
+    return RUN.sub(lambda m: m.group(2), s).replace("\n", " ").replace("\r", " ")
 
 
 def dominant(s, base):
@@ -70,20 +75,20 @@ def build(geom_dir, tr_dir, out_path):
         tf = tr_dir / f"{page}.json"
         if not tf.exists():
             continue
-        geom = json.loads(gf.read_text(encoding="utf-8"))["blocks"]
+        blocks = json.loads(gf.read_text(encoding="utf-8"))["blocks"]
         tr = {t["id"]: t for t in json.loads(tf.read_text(encoding="utf-8"))}
-        by_id = {b["id"]: b for b in geom}
+        by_id = {b["id"]: b for b in blocks}
 
         # one flowing region per group of blocks
         groups = {}
-        for b in geom:
+        for b in blocks:
             t = tr.get(b["id"])
             if t is None or t.get("kind") == "art":
                 continue
             groups.setdefault(t.get("group") or b["id"], []).append(b["id"])
 
         # a reader who saw the box sitting on a drawing can move its left edge
-        for b in geom:
+        for b in blocks:
             left = (tr.get(b["id"]) or {}).get("left")
             if isinstance(left, int) and b["x"] < left < b["x"] + b["w"]:
                 b["cover"] = [[max(c[0], left), c[1], c[2], c[3]] for c in b["cover"]]
@@ -91,6 +96,7 @@ def build(geom_dir, tr_dir, out_path):
                 b["w"] -= left - b["x"]
                 b["x"] = left
 
+        body_h = geom.body_height(blocks)
         entries = []
         for g, ids in sorted(groups.items()):
             ids.sort()
@@ -109,7 +115,8 @@ def build(geom_dir, tr_dir, out_path):
             for b in gb:
                 cover.extend(b["cover"])
             entries.append(dict(
-                x=x, y=y, w=w, avail=avail, size=h + 1,
+                x=x, y=y, w=w, avail=avail,
+                size=geom.text_size(h, body_h, plain(text)),
                 fg=fg, bg=by_id[ids[0]].get("bg", [255, 253, 236]),
                 cover=cover, ko=plain(text),
             ))

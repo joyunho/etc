@@ -5,6 +5,7 @@ renders is what the widget puts on the page -- give or take the font, since the
 game draws Korean with Klei's own CJK fallback face."""
 import json, os, re, sys, statistics
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import geom
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 
@@ -39,6 +40,7 @@ def runs(s, base):
 
 
 def tokens(s):
+    s = s.replace("\n", " ").replace("\r", " ")
     out, buf = [], ""
     for ch in s:
         if ch == " ":
@@ -91,6 +93,7 @@ def render(page, blocks_geom, tr, out_path, src=None):
     d = ImageDraw.Draw(im)
     by_id = {b["id"]: b for b in blocks_geom}
     trs = {t["id"]: t for t in tr}
+    body_h = geom.body_height(blocks_geom)
 
     # a reader who saw the box sitting on a drawing can move its left edge
     for b in blocks_geom:
@@ -131,8 +134,8 @@ def render(page, blocks_geom, tr, out_path, src=None):
         lead = int(statistics.median([b["lead"] for b in gb]))
         avail = max(b["y"] + b["lines"] * b["lead"] for b in gb) - y
         base = COLOURS.get(by_id[ids[0]]["colour"], COLOURS["ink"])
-        heavy = h >= 26
-        size = h + (2 if heavy else 1)
+        size = geom.text_size(h, body_h, text)
+        heavy = size >= 26
         rs = runs(text, by_id[ids[0]]["colour"])
         while size > 8:
             ft = font(size, heavy)

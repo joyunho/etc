@@ -234,3 +234,112 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def widen(a, cover, ic, limit=16, gap=12, dirt=0.03, near=70):
+    """Grow a finished cover box over the last few pixels of English beside it.
+
+    The boxes are measured from clustered letters, so anything the clusterer
+    would not take -- a bullet's leading hyphen, a lone digit, the first stroke
+    of a capital that sits in the page-edge shading -- ends up just outside,
+    and survives the paint as a sliver of English next to the Korean. This
+    walks outward from both ends and absorbs ink that is only a few pixels
+    away, provided the ground it crosses is page rather than drawing.
+
+    Applied after the geometry is settled and keyed by nothing but the box, so
+    it can be re-tuned without renumbering the blocks a reader has already
+    worked on."""
+    ink = detect.ink_mask(a)
+    pm = detect.page_mask(a)
+    draw_px = ~(pm | ndimage.binary_dilation(ink, np.ones((3, 3))))
+    blocked = np.zeros(pm.shape, bool)
+    for ix0, iy0, ix1, iy1 in ic:
+        blocked[max(0, iy0):iy1, max(0, ix0):ix1] = True
+
+    out = []
+    for x0, y0, x1, y1 in cover:
+        lo, hi = max(0, y0 - 1), min(a.shape[0], y1 + 1)
+
+        base = np.array(page_colour(a, pm, [[x0, y0, x1, y1]]))
+
+        def clean(p, q):
+            if q <= p:
+                return True
+            if blocked[lo:hi, p:q].any():
+                return False
+            strip = draw_px[lo:hi, p:q]
+            if strip.size == 0 or strip.mean() < dirt:
+                return True
+            # The page-edge shading is not page and not ink, so it reads as
+            # drawing, but it is only the page a little darker. Crossing it
+            # costs a faint notch; not crossing it leaves a capital letter
+            # standing in English. Cross it, but only while it stays close to
+            # the page colour -- a real drawing never is.
+            patch = a[lo:hi, p:q].reshape(-1, 3)
+            return bool(patch.size) and np.abs(patch - base).max(axis=1).max() < near
+
+        left = x0
+        while x0 - left < limit:
+            p = max(0, left - gap)
+            band = ink[lo:hi, p:left]
+            if band.size == 0 or not band.any():
+                break
+            cols = np.nonzero(band.sum(axis=0))[0]
+            first = p + int(cols[0])
+            if not clean(first, left):
+                break
+            left = first
+        right = x1
+        while right - x1 < limit:
+            q = min(a.shape[1], right + gap)
+            band = ink[lo:hi, right:q]
+            if band.size == 0 or not band.any():
+                break
+            cols = np.nonzero(band.sum(axis=0))[0]
+            last = right + int(cols[-1]) + 1
+            if not clean(right, last):
+                break
+            right = last
+        out.append([max(0, left), y0, right, y1])
+    return out
+
+
+def widen_page(page, blocks, work=None):
+    """widen() for a whole page, loading what it needs off disk."""
+    work = work or S
+    a = detect.load(f"{work}/pages/{page}.png")
+    ic = detect.icons(a, detect.page_mask(a), detect.ink_mask(a))
+    for b in blocks:
+        b["cover"] = widen(a, b["cover"], ic)
+        b["x"] = min(c[0] for c in b["cover"])
+        b["w"] = max(c[2] for c in b["cover"]) - b["x"]
+    return blocks
+
+
+def body_height(blocks):
+    """The height of ordinary body text on this page.
+
+    Taken from the blocks that have more than one line, because those are
+    certainly paragraphs: a single-line block can be a heading, or a stat row
+    whose measured height was inflated by an icon that got clustered into it."""
+    hs = sorted(b["h"] for b in blocks)
+    if not hs:
+        return 17
+    # the taller half is headings and rows an icon inflated, so take the
+    # middle of the shorter half -- that is the paragraph text
+    cut = hs[:max(1, int(len(hs) * 0.6))]
+    return int(statistics.median(cut))
+
+
+def text_size(h, body, text):
+    """How big to set a block's Korean.
+
+    A block's own measured height is the right answer for a heading, and the
+    wrong one for a row of stats whose heart icon joined the line and doubled
+    it. Length tells them apart: headings are short. Anything long is body
+    text and is held near the page's own body size, so a mismeasured row can
+    no longer print at twice the size of the paragraph beside it."""
+    size = h + 1
+    if len(text) > 12:
+        size = min(size, body + 2)      # long means body text, whatever the box says
+    return max(9, size)
