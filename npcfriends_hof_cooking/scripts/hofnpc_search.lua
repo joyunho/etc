@@ -76,6 +76,7 @@ Search._providers = nil
 
 function Search.ResetCache()
 	Search._cache = {}
+	Search._told = {}
 end
 
 function Search.ResetInterests()
@@ -172,6 +173,28 @@ local function Ranked(cooker_name)
 
 	_ranked[cooker_name] = list
 	return list
+end
+
+-- Said once when the chef has made everything its ingredients allow. Without
+-- it the player sees the same few dishes coming round again and reasonably
+-- concludes the chooser is broken, when the honest answer is that four
+-- ingredients out of seven kinds only reach so many recipes.
+Search._told = {}
+
+function Search.Exhausted(key, cooker_name, candidates)
+	if Search._told[key] then
+		return
+	end
+	Search._told[key] = true
+
+	local reachable = 0
+	for _ in pairs(candidates or {}) do
+		reachable = reachable + 1
+	end
+
+	Core.Log(string.format(
+		"made every dish these ingredients reach (%d on %s) -- more kinds of ingredient, not more of the same, is what adds new ones",
+		reachable, tostring(cooker_name)))
 end
 
 function Search.ResetRanked()
@@ -1031,6 +1054,12 @@ function Search.Choose(pool, existing_dishes, is_warly, cooker_name)
 
 	if new_product ~= nil then
 		best_product, best_score, best_data = new_product, new_score, new_data
+	elseif first_taste and best_product ~= nil then
+		-- Every dish these ingredients can reach has been made at least once,
+		-- so from here on the chef can only repeat itself. That looks like the
+		-- chef being dull when it is the larder being narrow, so say which it
+		-- is -- once per cooker, not every pot.
+		Search.Exhausted(key, cooker_name, entry.map)
 	end
 
 	if best_product == nil then

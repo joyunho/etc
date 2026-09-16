@@ -57,6 +57,7 @@ function Install.Install(CookingPlanner)
 	-- 4칸이 안 되는 도구(왈리의 휴대용 양념기)를 냄비로 고르지 않게 하고,
 	-- 쓸 수 있는 냄비는 돌아가며 쓰게 합니다.
 	pcall(Cookware.Attach, CookingPlanner)
+	pcall(Cookware.AttachBehaviour)
 
 	-- 왈리의 휴대용 양념기를 쓰게 합니다. NPCCookingBehavior 는 NPC 의 두뇌가
 	-- 만들어질 때 생기므로, 실제 연결은 첫 요리 계획 때 늦게 일어납니다.

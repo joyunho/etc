@@ -201,6 +201,121 @@ check("so does disabling the patch outright",
 Core.Configure({ enabled = true })
 
 print("")
+print("=== 6. Heap of Foods' own cookware ===")
+
+-- Its grills, ovens and pot hangers carry `cookwarestewer`, not `stewer`, and
+-- NPC Friends collects stations with FindEntities(..., {"stewer"}). So a base
+-- lined with them looked, to the chef, like a base with no pots in it at all.
+--
+-- CookwareStewer is stewer-shaped already, so it can stand in for one. What it
+-- must not do is take up residence on the real entity under the name `stewer`:
+-- EntityScript's GetPersistData walks pairs(self.components) and calls OnSave
+-- on each, so a component parked there would reach the save file.
+
+local world = {}
+_G.TheSim =
+{
+	FindEntities = function(_, _, _, _, _, _, _, musttags)
+		local want = (musttags or {})[1]
+		local out = {}
+		for _, ent in ipairs(world) do
+			if want == nil or ent:HasTag(want) then
+				out[#out + 1] = ent
+			end
+		end
+		return out
+	end,
+}
+
+local function HofCookware(prefab, slots, state)
+	guid = guid + 1
+	local cooking, done = state == "cooking", state == "done"
+	local harvested = false
+
+	return
+	{
+		prefab      = prefab,
+		GUID        = guid,
+		IsValid     = function() return true end,
+		GetPosition = function() return { x = 0, y = 0, z = 0 } end,
+		HasTag      = function(_, tag) return tag == "cookwarestewer" end,
+		components  =
+		{
+			cookwarestewer =
+			{
+				IsCooking    = function() return cooking end,
+				IsDone       = function() return done end,
+				CanCook      = function() return true end,
+				StartCooking = function() cooking = true return true end,
+				Harvest      = function() harvested = true done = false return true end,
+			},
+			container =
+			{
+				numslots    = slots,
+				GetNumSlots = function(self) return self.numslots end,
+			},
+		},
+		Harvested = function() return harvested end,
+	}
+end
+
+local chef = { GetPosition = function() return { x = 0, y = 0, z = 0 } end }
+
+do
+	local grill = HofCookware("kyno_cookware_grill", 4)
+	local small = HofCookware("kyno_cookware_small_grill", 3)
+	world = { grill, small }
+
+	local near = Cookware.Nearby(chef)
+
+	check("the four-slot cookware is found", #near == 1, tostring(#near))
+	check("and it is the grill, not the three-slot one",
+		near[1] ~= nil and near[1].prefab == "kyno_cookware_grill",
+		near[1] and near[1].prefab or "nil")
+
+	local proxy = near[1]
+	check("the chef is handed a stewer", proxy.components.stewer == grill.components.cookwarestewer)
+	check("the real entity never grows one", grill.components.stewer == nil)
+	check("the stand-in is recognised as one", Cookware.IsProxy(proxy))
+	check("a plain pot is not", not Cookware.IsProxy(CookPot()))
+	check("asking twice gives the same stand-in", Cookware.Proxy(grill) == proxy)
+
+	check("it is offered as somewhere to cook", Cookware.FindAvailableCookpot({ proxy }) == proxy)
+
+	proxy.components.stewer:StartCooking()
+	check("a busy one is passed over", Cookware.FindAvailableCookpot({ proxy }) == nil)
+end
+
+do
+	-- the behaviour's own station list is what the harvest step walks, so the
+	-- cookware has to arrive there and not merely in the chooser
+	local grill = HofCookware("kyno_cookware_oven_casserole", 4)
+	world = { grill }
+
+	local asked
+	_G.NPCCookingBehavior =
+	{
+		_GetCookpots = function(self) asked = self return { CookPot() } end,
+	}
+
+	Cookware.behaviour_attached = false
+	check("it hangs itself on the behaviour's list", Cookware.AttachBehaviour())
+	check("a second time is refused", Cookware.AttachBehaviour())
+
+	local pots = NPCCookingBehavior._GetCookpots({ inst = chef })
+	check("their pots are still there", pots[1] ~= nil and pots[1].prefab == "cookpot")
+	check("and the cookware is now with them",
+		pots[2] ~= nil and pots[2].prefab == "kyno_cookware_oven_casserole", tostring(#pots))
+	check("the same cookware is not added twice",
+		#NPCCookingBehavior._GetCookpots({ inst = chef }) == 2)
+
+	Core.Configure({ enabled = true, use_cookware = false, debug = false })
+	check("switching it off leaves their list alone",
+		#NPCCookingBehavior._GetCookpots({ inst = chef }) == 1)
+	Core.Configure({ enabled = true, use_cookware = true, spread_cookware = true, debug = false })
+end
+
+print("")
 if failures == 0 then
 	print("ALL CHECKS PASSED")
 	os.exit(0)

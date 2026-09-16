@@ -26,6 +26,7 @@ Core.cfg =
 	debug          = false,
 	protect        = {},        -- [prefab] = true, never spent as an ingredient
 	spread_cookware = true,     -- skip stations too small to cook in, rotate the rest
+	use_cookware   = true,      -- cook in Heap of Foods' own grills, ovens and pot hangers
 	taste_everything = true,    -- make one of each before making a second of anything
 	use_spicer      = true,     -- also use Warly's Portable Seasoning Station
 	use_dryer       = true,     -- also hang meat and mushrooms on drying racks

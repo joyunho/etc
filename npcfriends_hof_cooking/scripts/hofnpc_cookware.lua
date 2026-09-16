@@ -119,6 +119,115 @@ local function PickFrom(pots, key, want_done)
 	return nil
 end
 
+-- ═══════════════════════════════════════════════════════════════════════════
+--  Heap of Foods' own cookware
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- A grill, an oven, a pot hanger. They cook exactly what a Crock Pot cooks --
+-- hof_cooking.lua registers the common, seasonal and item recipes on every one
+-- of them -- so they add throughput and a kitchen that looks like a kitchen,
+-- not new dishes.
+--
+-- The chef never saw them. They carry `cookwarestewer`, and NPC Friends
+-- collects stations with FindEntities(..., {"stewer"}), a tag only the vanilla
+-- stewer component adds. So a base lined with HoF cookware looked, to the chef,
+-- like a base with no pots in it at all.
+--
+-- CookwareStewer is stewer-shaped already: IsCooking, IsDone, CanCook (its own
+-- container:IsFull), StartCooking(doer), Harvest(harvester). So the component
+-- itself can stand in for a stewer with no translation. What must not happen is
+-- putting it on the real entity under the name `stewer`: EntityScript's
+-- GetPersistData walks pairs(self.components) and calls OnSave on each, so a
+-- component parked there reaches the save file and every other mod. The chef
+-- gets a stand-in table instead, and the real entity keeps its own shape.
+--
+-- Only the four-slot cookware is offered. The small variants hold three, and a
+-- chef that plans four ingredients can never fill them -- the same trap the
+-- seasoning station sets, and skipped for the same reason.
+
+local COOKWARE_RADIUS = 17
+
+Cookware._proxies = setmetatable({}, { __mode = "k" })
+
+function Cookware.IsCookware(ent)
+	return ent ~= nil
+		and ent.components ~= nil
+		and ent.components.cookwarestewer ~= nil
+end
+
+function Cookware.Proxy(machine)
+	local cached = Cookware._proxies[machine]
+	if cached ~= nil then
+		return cached
+	end
+
+	local proxy =
+	{
+		prefab    = machine.prefab,
+		GUID      = machine.GUID,
+		Transform = machine.Transform,
+
+		components =
+		{
+			stewer    = machine.components.cookwarestewer,
+			container = machine.components.container,
+		},
+
+		IsValid     = function() return machine:IsValid() end,
+		GetPosition = function() return machine:GetPosition() end,
+		HasTag      = function(_, tag) return machine:HasTag(tag) end,
+
+		_hofnpc_cookware = machine,
+	}
+
+	Cookware._proxies[machine] = proxy
+	return proxy
+end
+
+function Cookware.IsProxy(ent)
+	return ent ~= nil and ent._hofnpc_cookware ~= nil
+end
+
+-- Everything with a cookwarestewer within reach of the chef, as stand-ins.
+function Cookware.Nearby(inst)
+	local out = {}
+
+	if not Core.cfg.use_cookware or inst == nil or rawget(_G, "TheSim") == nil then
+		return out
+	end
+
+	local centre, x, z = inst._cooking_center, nil, nil
+
+	if type(centre) == "table" and centre.x ~= nil then
+		x, z = centre.x, centre.z
+	elseif type(inst.GetPosition) == "function" then
+		local pos = inst:GetPosition()
+		x, z = pos.x, pos.z
+	else
+		return out
+	end
+
+	local ok, found = pcall(function()
+		return TheSim:FindEntities(x, 0, z, COOKWARE_RADIUS, nil,
+			{ "INLIMBO", "burnt" }, { "cookwarestewer" })
+	end)
+
+	if not ok or type(found) ~= "table" then
+		return out
+	end
+
+	for _, ent in ipairs(found) do
+		if ent:IsValid() and Cookware.IsCookware(ent) then
+			local proxy = Cookware.Proxy(ent)
+			if proxy ~= nil and Cookware.CanTakeLoad(proxy) then
+				out[#out + 1] = proxy
+			end
+		end
+	end
+
+	return out
+end
+
 function Cookware.FindAvailableCookpot(cookpots)
 	-- A seasoning station or a drying rack is normally kept out of the chef's
 	-- way, because its own behaviour cannot load either. When hofnpc_stations
@@ -182,6 +291,54 @@ function Cookware.FindAvailableCookpot(cookpots)
 	end
 
 	return pot
+end
+
+-- The cookware has to reach the behaviour's own station list, not just the
+-- chooser: the pre-harvest step walks that list itself, so a pot added anywhere
+-- else would be cooked in and then never emptied.
+--
+-- hofnpc_stations wraps the same method for its racks and kegs. This wrapper
+-- goes on top of that one rather than inside it, because the merged file is one
+-- chunk in module order and stations is written before cookware.
+Cookware.behaviour_attached = false
+
+function Cookware.AttachBehaviour()
+	if Cookware.behaviour_attached then
+		return true
+	end
+
+	local class = rawget(_G, "NPCCookingBehavior")
+	if class == nil or type(class._GetCookpots) ~= "function" then
+		return false
+	end
+
+	local original = class._GetCookpots
+
+	class._GetCookpots = function(self)
+		local pots = original(self) or {}
+
+		if Core.cfg.enabled and Core.cfg.use_cookware then
+			pcall(function()
+				local seen = {}
+				for _, pot in ipairs(pots) do
+					local real = Cookware.IsProxy(pot) and pot._hofnpc_cookware or pot
+					seen[real] = true
+				end
+
+				for _, proxy in ipairs(Cookware.Nearby(self.inst)) do
+					if not seen[proxy._hofnpc_cookware] then
+						seen[proxy._hofnpc_cookware] = true
+						pots[#pots + 1] = proxy
+					end
+				end
+			end)
+		end
+
+		return pots
+	end
+
+	Cookware.behaviour_attached = true
+	return true
 end
 
 -- Swap ours in, keeping theirs so `enabled = false` still gives their behaviour.
