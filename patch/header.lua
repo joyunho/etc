@@ -79,6 +79,7 @@ local USER_SETTINGS =
 	--   돌아가며 씁니다. (다 만든 음식을 거두는 것은 그대로입니다)
 	spread_cookware = true,
 	use_cookware    = true,
+	stock_mod_food  = true,
 
 	-- 왈리의 휴대용 양념기를 쓰게 할지.
 	--   요리된 음식 + 향신료를 양념기에 넣어 양념 요리를 만듭니다.

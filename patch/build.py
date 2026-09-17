@@ -51,6 +51,7 @@ MERGE_ORDER = [
     (SCRIPTS / "hofnpc_stations.lua", "Stations"),
     (SCRIPTS / "hofnpc_search.lua", "Search"),
     (SCRIPTS / "hofnpc_cookware.lua", "Cookware"),
+    (SCRIPTS / "hofnpc_pantry.lua", "Pantry"),
     (SCRIPTS / "hofnpc_diag.lua", "Diag"),
 ]
 

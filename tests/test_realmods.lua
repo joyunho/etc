@@ -570,6 +570,132 @@ check("the ingredients the mods added are put in the pot", #unused == 0,
 	"never used: " .. table.concat(unused, ", "))
 
 print("")
+print("=== the NPCs' own idea of what is worth carrying ===")
+
+-- The chef was never the reason modded food went unused. NPC Friends decides
+-- what every NPC picks up and where it puts it in npc/npc_item_classify.lua,
+-- and that is a whitelist of prefab names with two tag fallbacks. A modded
+-- vegetable matches none of them, so it is classed "ignore": not picked up,
+-- not put in the fridge, never in a container the chef can see.
+--
+-- npc_item_config.lua is a plain data table, so this is the real one.
+
+do
+	local NPCFRIENDS = WS .. "/3684000581"
+	local load_config = loadfile(NPCFRIENDS .. "/scripts/npc/npc_item_config.lua")
+
+	if load_config == nil then
+		print("  SKIP  NPC Friends (3684000581) is not installed")
+	else
+		local ok, config = pcall(load_config)
+		check("NPC Friends' item config still loads as plain data",
+			ok and type(config) == "table" and type(config.ICEBOX) == "table")
+
+		if ok and type(config) == "table" then
+			-- npc_item_classify.lua exports these by reference so they can be
+			-- extended at runtime; this is the shape it exports.
+			local classify =
+			{
+				DELETE = config.DELETE, GROUND = config.GROUND, CHEST = config.CHEST,
+				ICEBOX = config.ICEBOX, IGNORE = config.IGNORE,
+			}
+
+			-- npc_tuning.lua wants the game's globals, so read its blacklist
+			-- out of the text rather than running it.
+			local blacklist = {}
+			local tuning = io.open(NPCFRIENDS .. "/scripts/npc_tuning.lua", "r")
+			if tuning ~= nil then
+				local text = tuning:read("*a")
+				tuning:close()
+				local body = text:match("COOK_INGREDIENT_BLACKLIST%s*=%s*{(.-)}")
+				for name in (body or ""):gmatch("([%w_]+)%s*=%s*true") do
+					blacklist[name] = true
+				end
+			end
+			check("and its cooking blacklist is readable", next(blacklist) ~= nil)
+
+			local before = {}
+			for prefab in pairs(classify.ICEBOX) do before[prefab] = true end
+
+			check("the Eyerose really is a cooking ingredient",
+				cooking.IsCookingIngredient("htf_eyerose"))
+			check("and so is the Black Mushroom",
+				cooking.IsCookingIngredient("htf_blackmushroom"))
+			check("yet NPC Friends walks past the Eyerose",
+				not before.htf_eyerose)
+			check("and past the Black Mushroom",
+				not before.htf_blackmushroom)
+
+			local Pantry = require("hofnpc_pantry")
+			local added = Pantry.Stock(classify, cooking, blacklist)
+
+			check("the Eyerose is now worth carrying", classify.ICEBOX.htf_eyerose == true)
+			check("so is the Black Mushroom", classify.ICEBOX.htf_blackmushroom == true)
+
+			-- what else was in the same hole
+			local fish = 0
+			for prefab in pairs(classify.ICEBOX) do
+				if not before[prefab] and prefab:find("^oceanfish_") then
+					fish = fish + 1
+				end
+			end
+			check("and every kind of ocean fish, which was also being walked past",
+				fish >= 18, tostring(fish) .. " kinds")
+
+			-- and what must not move
+			check("twigs are still a chest item, not a fridge item",
+				classify.CHEST.twigs == true and before.twigs == nil
+				and classify.ICEBOX.twigs == nil)
+			check("nothing they deleted came back",
+				classify.ICEBOX.rot == nil and classify.ICEBOX.wetgoop == nil)
+			-- Royal jelly is already on their fridge list, so the claim is not
+			-- that it is absent -- it is that we did not put it there.
+			local moved = {}
+			for name in pairs(blacklist) do
+				for _, prefab in ipairs({ name, name .. "_cooked", name .. "_dried" }) do
+					if classify.ICEBOX[prefab] and not before[prefab] then
+						moved[#moved + 1] = prefab
+					end
+				end
+			end
+			check("nothing they blacklisted for cooking was stocked by us",
+				#moved == 0, table.concat(moved, ", "))
+			check("the mandrake they filed under chest is left there",
+				classify.CHEST.mandrake == true and classify.ICEBOX.mandrake == nil)
+
+			-- A dish that is itself an ingredient already reaches the fridge
+			-- through the preparedfood tag, so naming it changes nothing. The
+			-- number that matters is the raw ingredients, which had no route
+			-- there at all.
+			local dish = {}
+			for _, products in pairs(cooking.recipes) do
+				for product in pairs(products) do dish[product] = true end
+			end
+
+			local total, placed, raw, cooked_dish = 0, 0, 0, 0
+			for prefab in pairs(cooking.ingredients) do
+				total = total + 1
+				if before[prefab] then
+					placed = placed + 1
+				elseif classify.ICEBOX[prefab] then
+					if dish[prefab] then cooked_dish = cooked_dish + 1 else raw = raw + 1 end
+				end
+			end
+
+			print(string.format("  --    %d cooking ingredients; %d already classified, %d newly named",
+				total, placed, added))
+			print(string.format("  --    of those %d: %d raw ingredients that had no route to the fridge, %d dishes the preparedfood tag already carried",
+				added, raw, cooked_dish))
+			check("the raw ingredients are the ones that were really stranded",
+				raw >= 40, tostring(raw))
+			check("it did not claim more than there are ingredients to claim",
+				added <= total - placed, added .. " of " .. (total - placed))
+			check("a second pass is a no-op", Pantry.Stock(classify, cooking, blacklist) == 0)
+		end
+	end
+end
+
+print("")
 if failures == 0 then
 	print("ALL CHECKS PASSED")
 	os.exit(0)
