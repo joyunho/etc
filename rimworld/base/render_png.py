@@ -23,8 +23,12 @@ def korean_font(size):
             continue
     return ImageFont.load_default()
 TILE = 12
+HARD_LABELS = [("문루 · 구멍", 6, 24, 2), ("옹성 마당", 0, 34, 3), ("바깥 성문", 0, 38, 4), ("뱀길 입구", 30, 47, 5),
+               ("뱀길", -15, 53, 5), ("쪽문", -37, -2, 4), ("쪽문", 37, -2, 4), ("쪽문", 0, -36, 4),
+               ("밭", -30, 9, 1), ("발전기 띠", 9, -31, 3), ("무덤", 23, -19, 3), ("폐기물 창고", 22, 24, 4),
+               ("중력부양선 갑판", 29, -14, 6), ("뜰", -18, -27, 2)]
 # names too long for their wedge of the picture
-SHORT = {"메카노이드 정비실": "정비실", "어린이방·학교": "어린이방"}
+SHORT = {"메카노이드 정비실": "정비실", "어린이방·학교": "어린이방", "문루(남쪽 큰길 끝)": ""}
 
 GROUND = (214, 199, 168)
 WALL = (74, 78, 84)
@@ -44,7 +48,15 @@ FEATURE = {
     "gravship": (150, 156, 164), "engine": (60, 190, 210), "console": (40, 80, 120),
     "tank": (200, 120, 40), "thruster": (90, 90, 96), "exhaust": (232, 214, 186),
     "kbwall": (74, 78, 84), "anchor": (120, 90, 160), "centrepiece": (150, 110, 60), "generator": (120, 84, 50),
+    # max-difficulty variant
+    "court": (234, 206, 158), "band": (199, 186, 156), "lane": (229, 219, 193), "maint": (196, 207, 219),
+    "store": (196, 207, 219), "trap": (150, 38, 38), "fence": (128, 96, 56), "hole": (190, 74, 52),
+    "blocker": (200, 56, 48), "shooter": (46, 88, 160), "gategap": (190, 74, 52), "postern": (214, 150, 44),
+    "entry": (190, 74, 52),
 }
+# drawn after the walls so they stay visible on floor tiles
+OVERLAY = {"hole", "blocker", "shooter", "gategap", "entry"}
+TINTS = {"court", "band", "lane", "maint", "store"}
 
 
 def main(plan_path, out_path, max_phase=5):
@@ -58,9 +70,7 @@ def main(plan_path, out_path, max_phase=5):
     def box(i, j, color, inset=0):
         d.rectangle([i * TILE + inset, j * TILE + inset, (i + 1) * TILE - 1 - inset, (j + 1) * TILE - 1 - inset], fill=color)
 
-    for f in plan["features"]:
-        if f["phase"] > max_phase:
-            continue
+    def draw_feature(f):
         color = FEATURE[f["kind"]]
         for dx, dy in f["cells"]:
             i, j = dx - x0, dy - y0
@@ -74,8 +84,29 @@ def main(plan_path, out_path, max_phase=5):
                     d.line([i * TILE + 2, j * TILE + TILE // 2, (i + 1) * TILE - 3, j * TILE + TILE // 2], fill=(100, 140, 66))
             elif f["kind"] == "exhaust":
                 d.line([i * TILE, j * TILE, (i + 1) * TILE, (j + 1) * TILE], fill=(190, 150, 110))
+            elif f["kind"] == "trap":
+                d.line([i * TILE + 2, j * TILE + 2, (i + 1) * TILE - 3, (j + 1) * TILE - 3], fill=color, width=2)
+                d.line([i * TILE + 2, (j + 1) * TILE - 3, (i + 1) * TILE - 3, j * TILE + 2], fill=color, width=2)
+            elif f["kind"] == "fence":
+                d.rectangle([i * TILE + 2, j * TILE + TILE // 2 - 1, (i + 1) * TILE - 3, j * TILE + TILE // 2], fill=color)
+                d.rectangle([i * TILE + TILE // 2 - 1, j * TILE + 2, i * TILE + TILE // 2, (j + 1) * TILE - 3], fill=color)
+            elif f["kind"] in ("hole", "gategap", "entry"):
+                d.rectangle([i * TILE + 1, j * TILE + 1, (i + 1) * TILE - 2, (j + 1) * TILE - 2], outline=color, width=2)
+            elif f["kind"] == "blocker":
+                d.rectangle([i * TILE + 2, j * TILE + 2, (i + 1) * TILE - 3, (j + 1) * TILE - 3], fill=color)
+            elif f["kind"] == "shooter":
+                d.ellipse([i * TILE + 3, j * TILE + 3, (i + 1) * TILE - 4, (j + 1) * TILE - 4], fill=color)
+            elif f["kind"] == "postern":
+                continue
             else:
-                box(i, j, color, 0 if f["kind"] in ("gravship", "solar", "graves", "kbwall") else 1)
+                box(i, j, color, 0 if f["kind"] in {"gravship", "solar", "graves", "kbwall"} | TINTS else 1)
+
+    visible = [f for f in plan["features"] if f["phase"] <= max_phase]
+    for f in sorted((f for f in visible if f["kind"] in TINTS), key=lambda f: f["kind"] != "band"):
+        draw_feature(f)
+    for f in visible:
+        if f["kind"] not in TINTS and f["kind"] not in OVERLAY:
+            draw_feature(f)
 
     for j, row in enumerate(plan["cells"]):
         for i, (t, room, ph, door_ph) in enumerate(row):
@@ -90,6 +121,10 @@ def main(plan_path, out_path, max_phase=5):
                 box(i, j, GATE)
             elif t == "floor":
                 box(i, j, KIND.get(kinds.get(room), CORRIDOR))
+
+    for f in visible:
+        if f["kind"] in OVERLAY:
+            draw_feature(f)
 
     # faint grid every 5 tiles, counted from the centre tile, so positions can be counted off the picture
     grid_col = (196, 180, 150)
@@ -117,7 +152,7 @@ def main(plan_path, out_path, max_phase=5):
         tw = d.textlength(name, font=fnt)
         d.text((px - tw / 2, py - 7), name, font=fnt, fill=(40, 36, 30))
     # (text, dx, dy, phase it first appears in)
-    labels = [("남문(정문)", 0, 25, 4), ("서문(밭)", -26, -1, 4), ("동문", 25, -3, 4), ("북문", 0, -25, 4),
+    labels = HARD_LABELS if plan.get("variant") == "hard" else [("남문(정문)", 0, 25, 4), ("서문(밭)", -26, -1, 4), ("동문", 25, -3, 4), ("북문", 0, -25, 4),
               ("밭", -28, 8, 1), ("중력부양선 갑판", 31, -10, 5), ("발전기 띠", 12, -28, 3), ("무덤", 23, -26, 3),
               ("폐기물 창고", 35, -19, 4), ("킬박스", -8, 27, 4)]
     for text, dx, dy, ph in labels:
@@ -132,4 +167,4 @@ def main(plan_path, out_path, max_phase=5):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1], sys.argv[2], int(sys.argv[3]) if len(sys.argv) > 3 else 5)
+    main(sys.argv[1], sys.argv[2], int(sys.argv[3]) if len(sys.argv) > 3 else 9)
