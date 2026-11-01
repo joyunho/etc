@@ -3,3 +3,6 @@ build/
 
 # Created on the player's machine by install.bat
 _backup/
+
+# Python bytecode from running the base-plan scripts
+__pycache__/
