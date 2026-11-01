@@ -23,6 +23,8 @@ def korean_font(size):
             continue
     return ImageFont.load_default()
 TILE = 12
+# names too long for their wedge of the picture
+SHORT = {"메카노이드 정비실": "정비실", "어린이방·학교": "어린이방"}
 
 GROUND = (214, 199, 168)
 WALL = (74, 78, 84)
@@ -41,7 +43,7 @@ FEATURE = {
     "solar": (92, 120, 150), "graves": (140, 132, 120), "wastepack": (166, 178, 60),
     "gravship": (150, 156, 164), "engine": (60, 190, 210), "console": (40, 80, 120),
     "tank": (200, 120, 40), "thruster": (90, 90, 96), "exhaust": (232, 214, 186),
-    "kbwall": (74, 78, 84), "anchor": (120, 90, 160), "centrepiece": (150, 110, 60),
+    "kbwall": (74, 78, 84), "anchor": (120, 90, 160), "centrepiece": (150, 110, 60), "generator": (120, 84, 50),
 }
 
 
@@ -76,10 +78,10 @@ def main(plan_path, out_path, max_phase=5):
                 box(i, j, color, 0 if f["kind"] in ("gravship", "solar", "graves", "kbwall") else 1)
 
     for j, row in enumerate(plan["cells"]):
-        for i, (t, room, ph) in enumerate(row):
+        for i, (t, room, ph, door_ph) in enumerate(row):
             if t == "ground" or ph > max_phase:
                 continue
-            if t == "wall":
+            if t == "wall" or (t == "door" and door_ph > max_phase):
                 box(i, j, WALL)
             elif t == "door":
                 box(i, j, WALL)
@@ -89,6 +91,15 @@ def main(plan_path, out_path, max_phase=5):
             elif t == "floor":
                 box(i, j, KIND.get(kinds.get(room), CORRIDOR))
 
+    # faint grid every 5 tiles, counted from the centre tile, so positions can be counted off the picture
+    grid_col = (196, 180, 150)
+    for k in range(-60, 61, 5):
+        gx = (k - x0) * TILE
+        gy = (k - y0) * TILE
+        if 0 <= gx <= w * TILE:
+            d.line([gx, 0, gx, h * TILE], fill=grid_col if k else (150, 130, 100), width=1)
+        if 0 <= gy <= h * TILE:
+            d.line([0, gy, w * TILE, gy], fill=grid_col if k else (150, 130, 100), width=1)
     font = korean_font(13)
     small = korean_font(11)
     for r in plan["rooms"]:
@@ -96,7 +107,7 @@ def main(plan_path, out_path, max_phase=5):
             continue
         cx, cy = r["center"]
         i, j = cx - x0, cy - y0
-        name = r["name"].split("(")[0]
+        name = SHORT.get(r["name"], r["name"].split("(")[0])
         if r["kind"] == "bedroom":
             name = name.replace("침실 ", "")
             fnt = small
@@ -105,10 +116,13 @@ def main(plan_path, out_path, max_phase=5):
         px, py = i * TILE + TILE // 2, j * TILE + TILE // 2
         tw = d.textlength(name, font=fnt)
         d.text((px - tw / 2, py - 7), name, font=fnt, fill=(40, 36, 30))
-    labels = [("남문(정문)", 0, 25), ("서문(밭)", -26, -1), ("동문", 25, -3), ("북문", 0, -25),
-              ("밭", -28, 8), ("중력부양선 갑판", 31, -10), ("발전기 띠", 12, -28), ("폐기물 창고", 21, 25),
-              ("킬박스", 0, 30)]
-    for text, dx, dy in labels:
+    # (text, dx, dy, phase it first appears in)
+    labels = [("남문(정문)", 0, 25, 4), ("서문(밭)", -26, -1, 4), ("동문", 25, -3, 4), ("북문", 0, -25, 4),
+              ("밭", -28, 8, 1), ("중력부양선 갑판", 31, -10, 5), ("발전기 띠", 12, -28, 3), ("무덤", 23, -26, 3),
+              ("폐기물 창고", 35, -19, 4), ("킬박스", -8, 27, 4)]
+    for text, dx, dy, ph in labels:
+        if ph > max_phase:
+            continue
         i, j = dx - x0, dy - y0
         if 0 <= i < w and 0 <= j < h:
             tw = d.textlength(text, font=small)

@@ -71,25 +71,25 @@ ROOMS = [
     ("hall", "큰 홀(식당+휴게실)", "hall", "center", 0, 360, 1,
      "식탁·의자 12석, 오락 기구, 가운데 조각상. 첫날에는 침대를 놓고 함께 자는 방으로 씁니다."),
     ("kitchen", "주방", "kitchen", "inner", 186, 228, 2,
-     "스토브 2대. 홀과 링 복도에 문이 하나씩. 바닥은 「항균 바닥」이나 돌바닥."),
+     "「스토브」 2대(전기가 생기면 「전기 스토브」). 문은 링 복도 쪽 하나만 두어 지나다니는 사람이 없게. 바닥을 깔고 늘 깨끗하게."),
     ("prison", "수감실", "prison", "inner", 228, 264, 4,
      "수감용 침대 2~3. 문은 링 복도 쪽 하나."),
     ("lab", "연구소", "lab", "inner", 6, 84, 2,
-     "연구 작업대 2대, 나중에 「첨단 연구 작업대」와 「복합 분석기」."),
+     "연구 작업대 2대, 나중에 「첨단 연구 작업대」와 바로 옆 「복합 분석기」. 문은 홀 쪽 하나만."),
     ("school", "어린이방·학교", "school", "inner", 96, 174, 4,
-     "아기 침대, 「교실 책상」과 「칠판」 3개. 아이가 없으면 독서실·휴게실로."),
+     "「아기 침대」, 「교실 책상」과 「칠판」 3개. 문은 홀 쪽 하나만. 아이가 없으면 독서실·휴게실로."),
     ("mechbay", "메카노이드 정비실", "mech", "inner", 276, 318, 4,
      "「메카노이드 충전기」와 「메카노이드 배양기」. 리프터가 바로 창고로 나갑니다."),
     ("battery", "축전지실", "power", "inner", 318, 354, 3,
-     "축전지와 「전원 스위치」. 발전기는 바깥에, 이 방만 따로 떼어 불이 번지지 않게."),
+     "축전지와 「전원 스위치」. 처음부터 돌벽과 돌문으로 지어 불이 번지지 않게. 발전기는 바깥에."),
     ("freezer", "냉동고", "freezer", "outer", 185, 224, 2,
-     "선반 줄. 「냉방기」 2대를 바깥벽 평평한 곳에 박아 −5°C(뜨거운 쪽은 바깥). 문은 링 복도와 도축실 둘뿐."),
+     "선반 줄. 「냉방기」 2대를 바깥벽 평평한 곳에 박아 −5°C(뜨거운 쪽은 바깥, 그 바깥 칸은 비워 두기). 문은 링 복도와 도축실 둘뿐."),
     ("butcher", "도축실", "butcher", "outer", 224, 242, 2,
      "「도축 작업대」. 냉동고 옆이라 고기가 바로 들어갑니다."),
     ("hospital", "병실", "hospital", "outer", 242, 266, 3,
      "병상 3~4, 「생체신호 모니터」. 남문과 붙어 있어 쓰러진 사람을 바로 옮깁니다."),
-    ("storage", "중앙 창고", "storage", "outer", 274, 316, 3,
-     "선반 줄(한 칸에 3묶음). 남쪽 길 문과 작업장 문. 정문에서 가장 가까운 큰 방."),
+    ("storage", "남쪽 창고", "storage", "outer", 274, 316, 3,
+     "선반 줄(한 칸에 3묶음). 남쪽 길 문과 작업장 문. 정문에서 가장 가까운 큰 방. 「중력닻」 자리(4×4)도 여기."),
     ("workshop", "작업장", "workshop", "outer", 316, 354, 3,
      "석재 절삭대, 재봉·단조·기계 작업대, 나중에 조립 작업대. 창고와 문 하나로 연결."),
 ]
@@ -97,10 +97,10 @@ BED_ANGLES_NE = [6, 22, 37, 53, 68, 84]
 BED_ANGLES_NW = [96, 112, 127, 143, 158, 174]
 for i in range(5):
     ROOMS.append((f"bed_ne{i+1}", f"침실 동{i+1}", "bedroom", "outer",
-                  BED_ANGLES_NE[i], BED_ANGLES_NE[i + 1], 3 if i < 2 else 4,
+                  BED_ANGLES_NE[i], BED_ANGLES_NE[i + 1], 3 if i < 3 else 4,
                   "침대, 탁자, 서랍장, 조명. 약 20칸."))
     ROOMS.append((f"bed_nw{i+1}", f"침실 서{i+1}", "bedroom", "outer",
-                  BED_ANGLES_NW[i], BED_ANGLES_NW[i + 1], 3 if i < 1 else 4,
+                  BED_ANGLES_NW[i], BED_ANGLES_NW[i + 1], 4,
                   "침대, 탁자, 서랍장, 조명. 약 20칸."))
 
 RING_RANGE = {"inner": (R_HALL + 0.5, R_IN - 0.5), "outer": (R_MID + 0.5, R_OUT - 0.5)}
@@ -305,12 +305,10 @@ def main(out_dir):
     # hall: one door per avenue, plus kitchen and school
     for ang in (90, 180, 270, 0):
         doors.append(add_door("hall", "corridor", at(R_HALL, ang)))
-    doors.append(add_door("hall", "kitchen", at(R_HALL, 207)))
     doors.append(add_door("hall", "school", at(R_HALL, 135)))
     doors.append(add_door("hall", "lab", at(R_HALL, 45)))
     # inner rooms to the ring corridor
-    for key, ang in [("kitchen", 207), ("prison", 246), ("lab", 45), ("school", 135),
-                     ("mechbay", 297), ("battery", 336)]:
+    for key, ang in [("kitchen", 207), ("prison", 246), ("mechbay", 297), ("battery", 336)]:
         doors.append(add_door(key, "corridor", at(R_IN, ang)))
     # outer rooms to the ring corridor
     for key, room in rooms.items():
@@ -335,26 +333,46 @@ def main(out_dir):
     def feature(kind, cells, phase, label_text):
         features.append({"kind": kind, "cells": [list(c) for c in cells], "phase": phase, "label": label_text})
 
-    # killbox: two curved sandbag arcs funnelling to the south gate, turrets behind the wall
+    # Killbox: a crescent wall at radius 31 closed at its west end, open only at the
+    # south-east mouth, so raiders walk west along the 8-tile pocket to the south gate.
+    # The sandbag line faces the mouth. Turrets stand 4 tiles behind the defenders,
+    # 4 tiles apart, and 4+ tiles from the base walls (a dying mini-turret can explode,
+    # radius 3.9); the far turret backs onto the crescent, so build that wall in stone.
+    KB_R = 31
     crescent = [(dx, dy) for (dx, dy) in grid
-                if grid[(dx, dy)]["t"] == GROUND and in_band(math.hypot(dx, dy), 27)
-                and 232 <= polar(dx, dy)[1] <= 299]
-    feature("kbwall", crescent, 4, "초승달 벽: 적은 동남쪽 끝으로만 들어와 정문까지 걸어옵니다")
-    sand = [(dx, 25) for dx in range(-6, 7) if abs(dx) > 1] + [(dx, 24) for dx in (-6, 6)]
-    feature("sandbags", sand, 4, "정문 앞 모래주머니(아군이 엄폐하는 줄)")
-    feature("turret", [(-5, 23), (5, 23), (-10, 22), (10, 22)], 4, "「소형 기관포」 4대(정문 양옆, 서로 4칸 이상 떨어뜨림)")
+                if grid[(dx, dy)]["t"] == GROUND and in_band(math.hypot(dx, dy), KB_R)
+                and 232 <= polar(dx, dy)[1] <= 304]
+    closer = [(dx, dy) for (dx, dy) in grid
+              if grid[(dx, dy)]["t"] == GROUND and R_OUT + 0.5 <= math.hypot(dx, dy) < KB_R + 0.5
+              and on_ray(dx, dy, 232)]
+    feature("kbwall", sorted(set(crescent + closer)), 4, "초승달 벽(돌): 서쪽 끝은 바깥벽에 붙여 막고, 동남쪽 끝만 열어 둡니다")
+    pocket = lambda dx, dy: grid.get((dx, dy), {}).get("t") == GROUND and R_OUT + 0.5 <= math.hypot(dx, dy) < KB_R - 0.5
+    sand = [(7, dy) for dy in range(20, KB_R + 1) if pocket(7, dy)]
+    feature("sandbags", sand, 4, "모래주머니 줄: 동남쪽 입구를 향해 세로로. 아군은 이 줄 서쪽(정문 쪽)에 섭니다")
+    turrets = [(2, 26), (2, 30)]
+    walls_now = [p for p, c in grid.items() if c["t"] in (WALL, DOOR, GATE)]
+    for t in turrets:
+        if not pocket(*t):
+            raise SystemExit(f"turret {t} is not in the killbox pocket")
+        near = min(math.dist(t, w) for w in walls_now)
+        if near < 3.95:
+            raise SystemExit(f"turret {t} is {near:.1f} tiles from a base wall")
+    feature("turret", turrets, 4,
+            "「소형 기관포」 2대: 아군 뒤 4칸, 서로 4칸, 기지 벽에서 4칸 넘게(「자동 포탑」 연구, 대당 80W)")
 
     # crop arcs west of the base
     fields = [(dx, dy) for (dx, dy) in grid
-              if grid[(dx, dy)]["t"] == GROUND and 24.5 <= math.hypot(dx, dy) < 31.5
+              if grid[(dx, dy)]["t"] == GROUND and 26.5 <= math.hypot(dx, dy) < 32
               and 140 <= polar(dx, dy)[1] <= 220 and abs(dy) > 2]
-    feature("field", fields, 1, "부채꼴 밭(벼·감자·옥수수). 서문에서 냉동고까지 바로 들어옵니다")
+    feature("field", fields, 1, "부채꼴 밭(벼·감자·옥수수). 바깥벽과 밭 사이 4칸은 길 겸 방화대")
+    feature("generator", [(-24, 6), (-23, 6), (-24, 7), (-23, 7)], 2,
+            "「나무 화력발전기」: 2단계 냉동고 냉방기용 전기(1,000W). 3단계에 발전기 띠와 축전지가 생기면 예비로")
 
     # solar arc north
     solar = [(dx, dy) for (dx, dy) in grid
              if grid[(dx, dy)]["t"] == GROUND and 24.5 <= math.hypot(dx, dy) < 29.5
              and 55 <= polar(dx, dy)[1] <= 125 and abs(dx) > 2]
-    feature("solar", solar, 3, "발전기 띠(태양광·풍력, 북쪽 빈 땅)")
+    feature("solar", solar, 3, "발전기 띠: 「태양광 발전기」 자리. 「풍력 발전기」는 긴 변을 남북으로 세워 빈 땅(7×18)이 띠를 따라 동서로 뻗게")
 
     # graves north-east
     graves = [(dx, dy) for dx in range(20, 26) for dy in range(-25, -21)
@@ -362,11 +380,12 @@ def main(out_dir):
     feature("graves", graves, 3, "무덤")
 
     # wastepack freezer south-east, away from bedrooms
-    wp = [(dx, dy) for dx in range(19, 24) for dy in range(19, 24)]
-    feature("wastepack", wp, 4, "독성 폐기물 냉동 창고(작게, 침실과 멀리)")
+    wp = [(dx, dy) for dx in range(25, 30) for dy in range(-21, -16)]
+    feature("wastepack", wp, 4, "독성 폐기물 냉동 창고: 돌벽, 냉방기 1대. 습격 길·침실·중력부양선에서 떨어진 북동쪽")
 
-    anchor = [(dx, dy) for dx in range(7, 11) for dy in range(17, 21)
-              if grid.get((dx, dy), {}).get("room") == "storage"]
+    anchor = [(dx, dy) for dx in range(8, 12) for dy in range(15, 19)]
+    if any(grid.get(c, {}).get("room") != "storage" for c in anchor):
+        raise SystemExit("grav anchor slot is not all storage floor")
     feature("anchor", anchor, 5, "「중력닻」 자리(4×4, 창고 안)")
     feature("centrepiece", [(0, 0)], 1, "가운데 조각상이나 「기둥」")
 
@@ -375,11 +394,11 @@ def main(out_dir):
     pad = [(dx, dy) for (dx, dy) in grid if math.hypot(dx - pcx, dy) < 7.5 and grid[(dx, dy)]["t"] == GROUND]
     feature("gravship", pad, 5, "중력부양선 갑판(Ø15, 하부구조 약 180칸)")
     feature("engine", [(pcx + i, j) for i in (-1, 0, 1) for j in (-1, 0, 1)], 5, "「중력구동기」")
-    feature("console", [(pcx - 4, -1), (pcx - 4, 0)], 5, "「조종석 콘솔」")
+    feature("console", [(pcx - 5 + i, j) for i in (0, 1) for j in (-1, 0, 1)], 5, "「조종석 콘솔」(2×3)")
     feature("tank", [(pcx - 1 + i, 4 + j) for i in (0, 1) for j in (0, 1)], 5, "「소형 화학연료 탱크」")
-    feature("thruster", [(pcx + 7, -3), (pcx + 7, -2), (pcx + 7, 2), (pcx + 7, 3)], 5,
-            "「소형 추진기」 2개(분사구는 동쪽 빈 땅으로)")
-    exhaust = [(pcx + 8 + k, y) for k in range(5) for y in (-3, -2, 2, 3)]
+    feature("thruster", [(pcx + 6, -2), (pcx + 7, -2), (pcx + 6, 2), (pcx + 7, 2)], 5,
+            "「소형 추진기」 2개(1×2를 동서로 눕혀 갑판 위에, 분사구는 동쪽)")
+    exhaust = [(pcx + 8 + k, y) for k in range(5) for y in (-2, 2)]
     feature("exhaust", exhaust, 5, "추진기 분사 구역(비워 두기)")
 
     # ---- metrics -----------------------------------------------------------
@@ -406,13 +425,16 @@ def main(out_dir):
     hall_d = bfs(centers["hall"])
     pairs = [
         ("냉동고 → 주방", "freezer", "kitchen"),
-        ("주방 → 홀", "kitchen", "hall"),
-        ("중앙 창고 → 작업장", "storage", "workshop"),
+        ("냉동고 → 홀 (식사 들고 가는 길)", "freezer", "hall"),
+        ("남쪽 창고 → 작업장", "storage", "workshop"),
         ("남문 → 병실", "gate_s", "hospital"),
-        ("남문 → 중앙 창고", "gate_s", "storage"),
+        ("남문 → 남쪽 창고", "gate_s", "storage"),
         ("서문 → 냉동고", "gate_w", "freezer"),
-        ("메카노이드 정비실 → 중앙 창고", "mechbay", "storage"),
+        ("메카노이드 정비실 → 남쪽 창고", "mechbay", "storage"),
         ("연구소 → 홀", "lab", "hall"),
+        ("남쪽 창고 → 냉동고 (먼 길)", "storage", "freezer"),
+        ("남쪽 창고 → 연구소 (먼 길)", "storage", "lab"),
+        ("냉동고 → 작업장 (가죽 → 재봉, 가장 먼 길)", "freezer", "workshop"),
     ]
     points = dict(centers)
     points["gate_s"] = gates["south"]
@@ -447,6 +469,15 @@ def main(out_dir):
                 c["phase"] = 4
             else:
                 c["phase"] = min(ph) if ph else 4
+            if c["t"] == DOOR:
+                a, b = c["between"]
+                if "hall" in (a, b) and "corridor" in (a, b):
+                    # day one: only the west (fields) and south doors; the rest stay wall
+                    ang = polar(*p)[1]
+                    c["door_phase"] = 1 if 135 <= ang <= 315 else 3
+                else:
+                    c["door_phase"] = max(phase_of[k] for k in (a, b) if k != "corridor")
+                c["door_phase"] = max(c["door_phase"], c["phase"])
         elif c.get("room"):
             if c["room"] == "corridor":
                 near = []
@@ -475,6 +506,8 @@ def main(out_dir):
         "bedrooms": len(beds),
         "bedroom_area_min": min(len(rooms[k]["cells"]) for k in beds),
         "bedroom_area_max": max(len(rooms[k]["cells"]) for k in beds),
+        "killbox_wall_tiles": len(next(f for f in features if f["kind"] == "kbwall")["cells"]),
+        "sandbags": len(next(f for f in features if f["kind"] == "sandbags")["cells"]),
         "walls_by_phase": {str(ph): sum(1 for p, c in grid.items() if c["t"] == WALL and c.get("phase") == ph)
                            for ph in range(1, 6)},
     }
@@ -484,7 +517,7 @@ def main(out_dir):
         row = []
         for dx in range(W_MIN, W_MAX + 1):
             c = grid[(dx, dy)]
-            row.append([c["t"], c.get("room"), c.get("phase", 0)])
+            row.append([c["t"], c.get("room"), c.get("phase", 0), c.get("door_phase", 0)])
         cells.append(row)
     plan = {"origin": [W_MIN, H_MIN], "width": WIDTH, "height": HEIGHT, "cells": cells,
             "rooms": room_list, "features": features, "metrics": metrics, "stats": stats}
